@@ -1,11 +1,12 @@
-// Indify service worker — M2(新建链路 U1)
+// Indify service worker — M3(新建 U1 + 就地修改 U2 + 续聊 U3)
 // 职责:
 //   1. 持有与 Indify Bridge 的 WebSocket 连接(ws://127.0.0.1:39181/v1/events)
 //   2. 断线指数退避重连(1s/2s/4s/…封顶 30s)+ 心跳保活
 //   3. HTTP 调用封装 bridgeFetch(BASE=http://127.0.0.1:39181,token 在 storage.local.bridgeToken)
-//   4. 任务路由:submitTask / decision / getArtifact / getAdapter / retryInject
-//   5. 解析 WS 的 task.frame → 广播给面板;status 变 ready 时自动触发注入编排(幂等)
-//   6. 监听 content script 上报的应用上下文
+//   4. 任务路由:submitTask(create/modify)/ decision / getArtifact / getAdapter / retryInject / newSession
+//   5. 解析 WS 的 task.frame → 广播给面板;status 变 ready 时按 mode 自动触发注入编排(幂等)
+//   6. sessionId 透传(U3):storage.session.lastSessionId,任务 done 后更新
+//   7. 监听 content script 上报的应用上下文
 
 const BRIDGE_WS_URL = "ws://127.0.0.1:39181/v1/events";
 const BRIDGE_BASE = "http://127.0.0.1:39181";
@@ -25,8 +26,9 @@ let bridgeState = {
 let context = {}; // 最近一次 content script 上报的应用上下文
 let contextTabId = null; // 上报上下文的标签页 id
 
-let currentTask = null; // 当前任务(含 inject 子状态),持久化到 storage.session
+let currentTask = null; // 当前任务(含 inject 子状态、mode、context 快照),持久化到 storage.session
 let injectedTaskIds = new Set(); // 已完成注入编排的任务,保证 ready 帧幂等
+let lastSessionId = null; // U3:最近一次任务的 DSH 会话 id,提交时透传
 
 let ws = null;
 let reconnectDelay = RECONNECT_BASE_MS;
@@ -45,6 +47,7 @@ async function persistState() {
       context: context,
       currentTask: currentTask,
       injectedTasks: [...injectedTaskIds],
+      lastSessionId: lastSessionId,
     });
   } catch (e) {
     console.warn("[Indify] persistState 失败:", e);
@@ -58,6 +61,7 @@ async function restoreState() {
       "context",
       "currentTask",
       "injectedTasks",
+      "lastSessionId",
     ]);
     if (data && data.bridge) {
       bridgeState = { ...bridgeState, ...data.bridge };
@@ -68,6 +72,7 @@ async function restoreState() {
     if (Array.isArray(data && data.injectedTasks)) {
       injectedTaskIds = new Set(data.injectedTasks);
     }
+    if (data && data.lastSessionId) lastSessionId = data.lastSessionId;
   } catch (e) {
     console.warn("[Indify] restoreState 失败:", e);
   }
@@ -79,6 +84,7 @@ function broadcastStatus() {
     type: "indify:status",
     bridge: { ...bridgeState },
     context: { ...context },
+    lastSessionId: lastSessionId,
   };
   chrome.runtime.sendMessage(message).catch(() => {});
   persistState();
@@ -266,7 +272,7 @@ function stopHeartbeat() {
 
 // ---------- Bridge 帧处理 ----------
 function handleBridgeStatus(data) {
-  // 骨架仅透传 bridge 连接态;difyVersion/state/note 供面板展示(可选)
+  // 仅透传 bridge 连接态;difyVersion/state/note 供面板展示(可选)
   if (data && typeof data === "object") {
     bridgeState = { ...bridgeState, ...data };
   }
@@ -288,11 +294,29 @@ function handleTaskFrame(data) {
     currentTask = { ...data, inject: { status: "idle" } };
   }
 
+  // U3:任务 done 后拉取任务详情拿 sessionId(201 响应不含 sessionId),供续聊透传
+  if (data.status === "done" && currentTask) {
+    refreshLastSessionId(currentTask.taskId);
+  }
+
   persistState();
   broadcastTask(currentTask);
 
   if (data.status === "ready") {
     triggerInject(data.taskId);
+  }
+}
+
+// 任务 done 后拉取详情,拿到 Bridge 侧实际 sessionId(201 响应不含该字段)
+async function refreshLastSessionId(taskId) {
+  const res = await bridgeFetch("GET", `/v1/tasks/${taskId}`);
+  if (res.ok && res.data && res.data.sessionId) {
+    lastSessionId = res.data.sessionId;
+    if (currentTask && currentTask.taskId === taskId) {
+      currentTask.sessionId = res.data.sessionId;
+    }
+    persistState();
+    broadcastTask(currentTask);
   }
 }
 
@@ -309,10 +333,16 @@ function setInjectStatus(taskId, inject) {
 function triggerInject(taskId) {
   if (injecting.has(taskId) || injectedTaskIds.has(taskId)) return; // 幂等
   injecting.add(taskId);
-  doInject(taskId)
-    .then(() => {
-      injectedTaskIds.add(taskId);
-      persistState();
+  const task = currentTask;
+  const worker =
+    task && task.mode === "modify" ? doInjectModify(taskId) : doInject(taskId);
+  worker
+    .then((didInject) => {
+      // didInject === false 表示未真正注入(如 needDify),不标记,允许后续重试
+      if (didInject) {
+        injectedTaskIds.add(taskId);
+        persistState();
+      }
     })
     .catch((e) => {
       setInjectStatus(taskId, { status: "failed", error: String((e && e.message) || e) });
@@ -322,14 +352,13 @@ function triggerInject(taskId) {
     });
 }
 
+// create:拉 workflow.yaml → injectCreate → injected → 打开新应用页。返回 true 表示已注入
 async function doInject(taskId) {
-  // 1) 无 Dify 标签页 → 提示面板,保持 ready,等用户重试注入
   if (contextTabId == null) {
     setInjectStatus(taskId, { status: "needDify" });
-    return;
+    return false;
   }
 
-  // 2) 取 adapter + workflow.yaml
   const adapter = await getAdapter();
   if (!adapter) throw new Error("无法获取 adapter(请确认 Bridge 的 /v1/adapter/1.16.1 可用)");
 
@@ -341,7 +370,6 @@ async function doInject(taskId) {
 
   setInjectStatus(taskId, { status: "injecting" });
 
-  // 3) 交给 content script 执行控制台导入
   let injectResult;
   try {
     injectResult = await chrome.tabs.sendMessage(contextTabId, {
@@ -361,15 +389,67 @@ async function doInject(taskId) {
   const pattern = adapter.urls && adapter.urls.workflowPagePattern;
   const appUrl = pattern ? pattern.replace("{app_id}", appId || "") : undefined;
 
-  // 4) 通知 Bridge 注入完成(真实 Bridge 会随后推 injecting→done 帧)
   await bridgeFetch("POST", `/v1/tasks/${taskId}/injected`, { appId, appUrl });
 
-  // 5) 打开新应用工作流页(原生画布 = 最终人工闸口)
   if (appUrl && contextTabId != null) {
     chrome.tabs.update(contextTabId, { url: appUrl }).catch(() => {});
   }
 
   setInjectStatus(taskId, { status: "done", appId, appUrl });
+  return true;
+}
+
+// modify:拉 graph.json → injectModify(读最新 hash 再写回)→ injected → 单次刷新。返回 true 表示已注入
+async function doInjectModify(taskId) {
+  const task = currentTask;
+  const appId = task && task.context && task.context.appId;
+  const appUrl = task && task.context && task.context.appUrl;
+
+  if (contextTabId == null) {
+    setInjectStatus(taskId, { status: "needDify" });
+    return false;
+  }
+  if (!appId) {
+    setInjectStatus(taskId, { status: "needDify", error: "缺少 appId(请回到工作流画布页)" });
+    return false;
+  }
+
+  const adapter = await getAdapter();
+  if (!adapter) throw new Error("无法获取 adapter");
+
+  const graphRes = await bridgeFetch("GET", `/v1/artifacts/${taskId}/graph.json`);
+  if (!graphRes.ok) {
+    throw new Error(`获取 graph.json 失败(HTTP ${graphRes.status})`);
+  }
+  const graphText = typeof graphRes.data === "string" ? graphRes.data : JSON.stringify(graphRes.data);
+
+  setInjectStatus(taskId, { status: "injecting" });
+
+  let result;
+  try {
+    result = await chrome.tabs.sendMessage(contextTabId, {
+      type: "indify:injectModify",
+      appId,
+      graphText,
+      adapter,
+    });
+  } catch (e) {
+    throw new Error("content script 写回失败(确认 Dify 页面已打开):" + ((e && e.message) || e));
+  }
+
+  if (!result || result.ok !== true) {
+    throw new Error((result && result.error) || "写回失败(未知错误)");
+  }
+
+  await bridgeFetch("POST", `/v1/tasks/${taskId}/injected`, { appId, appUrl });
+
+  // 唯一一次刷新:画布就地呈现(不在 content script 里 reload,由 SW 统一控制)
+  if (contextTabId != null) {
+    chrome.tabs.reload(contextTabId).catch(() => {});
+  }
+
+  setInjectStatus(taskId, { status: "done", appId, appUrl });
+  return true;
 }
 
 // ---------- content script 上下文刷新 ----------
@@ -399,10 +479,45 @@ function startContextRefresh() {
 async function submitTask(message) {
   const spec = (message.spec || "").trim();
   if (!spec) return { ok: false, error: "需求不能为空" };
+  const mode = message.mode || "create";
 
-  const body = { mode: message.mode || "create", spec };
-  if (message.sessionId) body.sessionId = message.sessionId;
-  if (context && context.appId) body.context = { appId: context.appId };
+  const body = { mode, spec };
+  if (lastSessionId) body.sessionId = lastSessionId; // U3 会话透传
+
+  if (mode === "modify") {
+    // 刷新上下文拿最新 appId(避免用户已切换页面)
+    await requestContextFromContent("indify:getContext");
+    if (contextTabId == null || !context || !context.appId) {
+      return { ok: false, error: "请先打开 Dify 工作流画布页(http://localhost/app/{uuid}/workflow)", needDify: true };
+    }
+    const adapter = await getAdapter();
+    if (!adapter) return { ok: false, error: "无法获取 adapter" };
+
+    let draftRes;
+    try {
+      draftRes = await chrome.tabs.sendMessage(contextTabId, {
+        type: "indify:getDraft",
+        appId: context.appId,
+        adapter,
+      });
+    } catch (e) {
+      return { ok: false, error: "读取草稿失败(确认 Dify 页面已打开):" + ((e && e.message) || e), needDify: true };
+    }
+    if (!draftRes || draftRes.ok !== true) {
+      return { ok: false, error: (draftRes && draftRes.error) || "读取草稿失败" };
+    }
+
+    const appUrl = (adapter.urls && adapter.urls.workflowPagePattern)
+      ? adapter.urls.workflowPagePattern.replace("{app_id}", context.appId)
+      : context.url;
+    body.context = {
+      appId: context.appId,
+      appUrl,
+      currentGraph: (draftRes.draft && draftRes.draft.graph) || null,
+    };
+  } else {
+    if (context && context.appId) body.context = { appId: context.appId };
+  }
 
   const res = await bridgeFetch("POST", "/v1/tasks", body);
   if (!res.ok) return { ok: false, error: extractBridgeError(res) };
@@ -411,9 +526,10 @@ async function submitTask(message) {
   currentTask = {
     taskId: data.taskId,
     status: data.status || "queued",
-    mode: body.mode,
+    mode,
     spec,
-    sessionId: data.sessionId,
+    sessionId: data.sessionId || lastSessionId || null,
+    context: body.context || null,
     inject: { status: "idle" },
   };
   persistState();
@@ -460,6 +576,12 @@ async function retryInject(message) {
   return { ok: true };
 }
 
+async function newSession() {
+  lastSessionId = null;
+  persistState();
+  return { ok: true };
+}
+
 // ---------- 消息路由 ----------
 function handleContext(message, sender) {
   context = { ...(message.context || {}) };
@@ -475,6 +597,7 @@ async function handleGetStatus() {
     bridge: { ...bridgeState },
     context: { ...context },
     task: currentTask ? { ...currentTask } : null,
+    lastSessionId: lastSessionId,
   };
 }
 
@@ -503,6 +626,9 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 
     case "indify:retryInject":
       return retryInject(message);
+
+    case "indify:newSession":
+      return newSession();
 
     default:
       return;

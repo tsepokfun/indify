@@ -1,4 +1,4 @@
-// Indify side panel — M2(新建链路 U1)
+// Indify side panel — M3(新建 U1 + 就地修改 U2 + 续聊 U3)
 // 从 SW 拉状态 / 订阅 onMessage 渲染;无外部依赖,纯 JS。
 // 关键渲染逻辑抽为纯函数(见下),便于静态自查。
 
@@ -48,16 +48,15 @@ function escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
-// 结构预览卡片:ir = { meta:{name,mode}, nodes:[], edges:[] }
-function buildPreviewCard(ir, summary) {
-  if (!ir) {
+// 结构预览卡片:data = { name, mode, nodes:[], edges:[] }(create 来自 ir,modify 来自 graph)
+function buildPreviewCard(data, summary) {
+  if (!data) {
     return `<div class="preview"><div class="p-loading">正在加载预览…</div></div>`;
   }
-  const meta = ir.meta || {};
-  const name = meta.name || "(未命名)";
-  const mode = meta.mode || "workflow";
-  const nodes = Array.isArray(ir.nodes) ? ir.nodes : [];
-  const edges = Array.isArray(ir.edges) ? ir.edges : [];
+  const name = data.name || "(未命名)";
+  const mode = data.mode || "workflow";
+  const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+  const edges = Array.isArray(data.edges) ? data.edges : [];
   const nodeItems = nodes
     .map((n) => `<li>${escapeHtml(n.type)} · ${escapeHtml(n.title || n.id)}</li>`)
     .join("");
@@ -76,10 +75,13 @@ function buildPreviewCard(ir, summary) {
     </div>`;
 }
 
-// 任务卡片:task = { taskId, status, summary?, error?, spec?, inject? },preview = { ir, summary }
+// 任务卡片:task = { taskId, status, mode, summary?, error?, spec?, sessionId?, inject? },preview = { data, summary }
 function buildTaskCard(task, preview) {
   const status = task.status || "queued";
-  const label = statusLabel(status);
+  const isModify = task.mode === "modify";
+  // modify 的 injecting 文案 = "写回画布中…"
+  const label =
+    status === "injecting" && isModify ? "写回画布中…" : statusLabel(status);
   const cls = statusClass(status);
   const pct = statusProgress(status);
   const barCls = status === "done" ? "bar-done" : status === "failed" ? "bar-failed" : "";
@@ -94,8 +96,8 @@ function buildTaskCard(task, preview) {
   }
 
   if (status === "draft-ready") {
-    body += buildPreviewCard(preview && preview.ir, preview && preview.summary);
-    if (preview && preview.ir) {
+    body += buildPreviewCard(preview && preview.data, preview && preview.summary);
+    if (preview && preview.data) {
       body += `
         <div class="btn-row">
           <button class="btn primary" data-action="approve">确认</button>
@@ -120,17 +122,24 @@ function buildTaskCard(task, preview) {
       body += `<div class="task-error">注入失败:${escapeHtml(inj.error || "")}</div>
         <div class="btn-row"><button class="btn" data-action="retry-inject">重试注入</button></div>`;
     } else {
-      body += `<div class="task-summary">已生成,注入画布中…</div>`;
+      body += `<div class="task-summary">${isModify ? "已生成,写回画布中…" : "已生成,注入画布中…"}</div>`;
     }
   }
 
   if (status === "done") {
     const inj = task.inject || {};
     const url = inj.appUrl;
-    const msg = task.summary || "已注入完成,请查看画布。";
+    const msg = isModify ? "画布已更新(已刷新)" : task.summary || "已注入完成,请查看画布。";
     body += `<div class="task-summary">${escapeHtml(msg)}</div>`;
-    if (url) {
+    if (!isModify && url) {
       body += `<div class="result-link"><a data-action="open-app" data-url="${escapeHtml(url)}">打开工作流画布 →</a></div>`;
+    }
+    if (task.sessionId) {
+      body += `
+        <div class="session-row">
+          <span>继续修改(同一会话)</span>
+          <button class="btn" data-action="new-session">新会话</button>
+        </div>`;
     }
   }
 
@@ -161,14 +170,16 @@ const els = {
   emptyHint: document.getElementById("empty-hint"),
   chatInput: document.getElementById("chat-input"),
   sendBtn: document.getElementById("send-btn"),
+  modeHint: document.getElementById("mode-hint"),
 };
 
 let state = {
   messages: [], // { role:"user"|"system", text, ts }
   currentTask: null,
+  context: {}, // 最近一次 indify:status 携带的 Dify 页上下文
 };
 
-let preview = null; // { taskId, ir, summary }
+let preview = null; // { taskId, data, summary }
 let previewLoadingTaskId = null;
 
 function formatContext(ctx) {
@@ -196,6 +207,17 @@ function renderStatus(status) {
   }
   els.bridgeText.title = bridge.url || "";
   els.contextText.textContent = formatContext(ctx);
+
+  if (ctx && ctx.url) state.context = ctx;
+  renderModeHint();
+}
+
+function isWorkflowPage() {
+  return !!(state.context && state.context.page === "workflow" && state.context.appId);
+}
+
+function renderModeHint() {
+  els.modeHint.textContent = isWorkflowPage() ? "将修改当前工作流" : "将新建工作流";
 }
 
 function renderUserMessages() {
@@ -271,16 +293,20 @@ function maybeLoadPreview(taskId) {
 async function loadPreview(taskId) {
   if (previewLoadingTaskId === taskId) return;
   previewLoadingTaskId = taskId;
-  preview = { taskId, ir: null, summary: null };
+  preview = { taskId, data: null, summary: null };
   renderTaskCard();
 
-  const irRes = await sendMessagePromise({ type: "indify:getArtifact", taskId, file: "ir.json" });
+  const task = state.currentTask;
+  const isModify = task && task.mode === "modify";
+  const dataFile = isModify ? "graph.json" : "ir.json";
+
+  const dataRes = await sendMessagePromise({ type: "indify:getArtifact", taskId, file: dataFile });
   const resultRes = await sendMessagePromise({ type: "indify:getArtifact", taskId, file: "result.json" });
 
-  let ir = null;
+  let raw = null;
   let summary = null;
-  if (irRes.ok) {
-    try { ir = JSON.parse(irRes.text); } catch (e) { /* ignore */ }
+  if (dataRes.ok) {
+    try { raw = JSON.parse(dataRes.text); } catch (e) { /* ignore */ }
   }
   if (resultRes.ok) {
     try {
@@ -288,7 +314,23 @@ async function loadPreview(taskId) {
       summary = r && r.summary;
     } catch (e) { /* ignore */ }
   }
-  preview = { taskId, ir, summary };
+
+  // 归一化为 buildPreviewCard 需要的形状
+  const data = isModify
+    ? {
+        name: "当前工作流(就地修改)",
+        mode: "workflow",
+        nodes: (raw && raw.nodes) || [],
+        edges: (raw && raw.edges) || [],
+      }
+    : {
+        name: raw && raw.meta && raw.meta.name,
+        mode: (raw && raw.meta && raw.meta.mode) || "workflow",
+        nodes: (raw && raw.nodes) || [],
+        edges: (raw && raw.edges) || [],
+      };
+
+  preview = { taskId, data, summary };
   previewLoadingTaskId = null;
   renderTaskCard();
 }
@@ -300,7 +342,10 @@ async function submit() {
   els.chatInput.value = "";
   els.sendBtn.disabled = true;
   pushUserMessage(spec);
-  const res = await sendMessagePromise({ type: "indify:submitTask", mode: "create", spec });
+
+  const mode = isWorkflowPage() ? "modify" : "create";
+  const res = await sendMessagePromise({ type: "indify:submitTask", mode, spec });
+
   els.sendBtn.disabled = false;
   els.chatInput.focus();
   if (!res.ok) {
@@ -319,7 +364,7 @@ async function doDecision(taskId, action, feedback) {
 async function retrySubmit(task) {
   if (!task || !task.spec) return;
   pushSystemMessage("已重试:重新提交任务…");
-  const res = await sendMessagePromise({ type: "indify:submitTask", mode: "create", spec: task.spec });
+  const res = await sendMessagePromise({ type: "indify:submitTask", mode: task.mode || "create", spec: task.spec });
   if (!res.ok) {
     pushSystemMessage("重试提交失败:" + (res.error || "未知错误"));
   }
@@ -330,6 +375,17 @@ async function doRetryInject(taskId) {
   if (!res.ok) {
     pushSystemMessage("重试注入失败:" + (res.error || "未知错误"));
   }
+}
+
+async function doNewSession() {
+  const res = await sendMessagePromise({ type: "indify:newSession" });
+  if (!res.ok) {
+    pushSystemMessage("开启新会话失败:" + (res.error || "未知错误"));
+    return;
+  }
+  if (state.currentTask) state.currentTask.sessionId = null;
+  persistPanelState();
+  pushSystemMessage("已开启新会话(下次提交不复用原会话)");
 }
 
 // ================= 事件绑定 =================
@@ -395,6 +451,9 @@ els.taskCard.addEventListener("click", (e) => {
       if (url) chrome.tabs.create({ url });
       break;
     }
+    case "new-session":
+      doNewSession();
+      break;
     default:
       break;
   }

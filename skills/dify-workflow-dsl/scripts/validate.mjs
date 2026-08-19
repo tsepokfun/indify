@@ -223,6 +223,23 @@ export function validate(value) {
   return validateDsl(value);
 }
 
+/**
+ * 校验「裸 graph 对象」({nodes, edges, viewport?},modify 模式 graph.json 的形态)。
+ * 包一层临时 DSL 壳复用 validateDsl 的 graph 检查。
+ */
+export function validateGraph(graph) {
+  if (!isPlainObject(graph)) {
+    return { valid: false, errors: ["graph 必须是对象"], warnings: [] };
+  }
+  const shell = {
+    app: { name: "x", mode: "workflow" },
+    kind: "app",
+    version: DSL_VERSION,
+    workflow: { graph, features: {} },
+  };
+  return validateDsl(shell);
+}
+
 // ---------------------------------------------------------------------------
 // 内置自测样例
 // ---------------------------------------------------------------------------
@@ -320,14 +337,15 @@ function main() {
   }
   const inputPath = args.find((a) => !a.startsWith("-"));
   if (!inputPath) {
-    console.error("用法: node scripts/validate.mjs <file.json|file.yml> | --selftest");
+    console.error("用法: node scripts/validate.mjs <file.json|file.yml> [--graph] | --selftest");
     process.exit(2);
   }
+  const asGraph = args.includes("--graph");
   const text = readFileSync(inputPath, "utf8");
   const value = inputPath.endsWith(".yml") || inputPath.endsWith(".yaml")
     ? YAML.parse(text)
     : JSON.parse(text);
-  const r = validate(value);
+  const r = asGraph ? validateGraph(value) : validate(value);
   console.log(`校验 ${inputPath}:${r.valid ? " 有效 ✅" : " 无效 ❌"}`);
   for (const e of r.errors) console.log(`  [error] ${e}`);
   for (const w of r.warnings) console.log(`  [warn ] ${w}`);

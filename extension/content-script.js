@@ -1,9 +1,10 @@
-// Indify content script — M2(新建链路 U1)
+// Indify content script — M3(就地修改 U2 + 续聊 U3)
 // 注入 http://localhost/*(Dify 控制台):
 //   1. 识别当前 app 上下文(appId / appName / mode / page / url)
 //   2. 上报给 service worker({type:"indify:context"})
 //   3. 响应 SW 的 ping / getContext
-//   4. 执行 DSL 导入(indify:injectCreate,route B,§8.1)
+//   4. create:执行 DSL 导入(indify:injectCreate,route B)
+//   5. modify:读草稿(indify:getDraft)+ 写回草稿(indify:injectModify)
 //
 // 页面分类:
 //   - /app/{uuid}/workflow → page:"workflow",mode:"workflow"
@@ -55,10 +56,19 @@ function reportContext() {
   }
 }
 
-// ---------- DSL 导入(route B) ----------
+// ---------- 通用 HTTP 工具 ----------
 function readCsrfToken() {
   const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : undefined;
+}
+
+function buildHeaders(adapter) {
+  const c = (adapter && adapter.console) || {};
+  const csrfHeader = (c.csrf && c.csrf.headerName) || "X-CSRF-Token";
+  const headers = { "Content-Type": "application/json" };
+  const token = readCsrfToken();
+  if (token) headers[csrfHeader] = token;
+  return headers;
 }
 
 async function safeJson(res) {
@@ -80,24 +90,26 @@ function extractAppId(body) {
   );
 }
 
+function consoleUrl(adapter, pathWithPlaceholder, appId) {
+  const c = (adapter && adapter.console) || {};
+  const base = c.baseUrl || "http://localhost";
+  const apiPrefix = c.apiPrefix || "/console/api";
+  const p = (pathWithPlaceholder || "").replace("{app_id}", appId || "");
+  return base + apiPrefix + p;
+}
+
+// ---------- create:DSL 导入(route B) ----------
 // 执行控制台导入:POST /apps/imports(202 时 confirm)。返回 {ok, appId?, error?}
 async function injectCreate(yamlText, adapter) {
   if (!yamlText) return { ok: false, error: "yamlText 为空" };
   if (!adapter || !adapter.console) return { ok: false, error: "adapter 缺失 console 配置" };
 
-  const c = adapter.console;
-  const baseUrl = c.baseUrl || "http://localhost";
-  const apiPrefix = c.apiPrefix || "/console/api";
-  const importCfg = c.endpoints && c.endpoints.importDsl;
-  const confirmCfg = c.endpoints && c.endpoints.importConfirm;
-  const csrfHeader = (c.csrf && c.csrf.headerName) || "X-CSRF-Token";
-
+  const importCfg = adapter.console.endpoints && adapter.console.endpoints.importDsl;
+  const confirmCfg = adapter.console.endpoints && adapter.console.endpoints.importConfirm;
   if (!importCfg) return { ok: false, error: "adapter 缺少 importDsl 端点" };
 
-  const importUrl = baseUrl + apiPrefix + (importCfg.path || "/apps/imports");
-  const csrfToken = readCsrfToken();
-  const headers = { "Content-Type": "application/json" };
-  if (csrfToken) headers[csrfHeader] = csrfToken;
+  const importUrl = consoleUrl(adapter, importCfg.path || "/apps/imports");
+  const headers = buildHeaders(adapter);
 
   // 1) 提交导入
   let res;
@@ -124,10 +136,11 @@ async function injectCreate(yamlText, adapter) {
     const importId = body && body.import_id;
     if (!importId) return { ok: false, error: "202 响应缺少 import_id" };
 
-    const confirmPath = (
-      (confirmCfg && confirmCfg.path) || "/apps/imports/{import_id}/confirm"
+    const confirmUrl = consoleUrl(
+      adapter,
+      (confirmCfg && confirmCfg.path) || "/apps/imports/{import_id}/confirm",
+      null
     ).replace("{import_id}", importId);
-    const confirmUrl = baseUrl + apiPrefix + confirmPath;
 
     let cRes;
     try {
@@ -169,6 +182,109 @@ async function injectCreate(yamlText, adapter) {
   };
 }
 
+// ---------- modify:读/写草稿(就地更新) ----------
+function draftPath(adapter) {
+  const cfg =
+    adapter &&
+    adapter.console &&
+    adapter.console.endpoints &&
+    adapter.console.endpoints.draftGet;
+  return (cfg && cfg.path) || "/apps/{app_id}/workflows/draft";
+}
+
+// 读草稿:GET /apps/{app_id}/workflows/draft(CSRF 豁免,顺手带 token 无妨)
+async function getDraft(appId, adapter) {
+  if (!appId) return { ok: false, error: "缺少 appId" };
+  if (!adapter || !adapter.console) return { ok: false, error: "adapter 缺失" };
+
+  const url = consoleUrl(adapter, draftPath(adapter), appId);
+  const headers = buildHeaders(adapter);
+  let res;
+  try {
+    res = await fetch(url, { method: "GET", headers, credentials: "same-origin" });
+  } catch (e) {
+    return { ok: false, error: "读取草稿失败:" + ((e && e.message) || e) };
+  }
+  if (res.status !== 200) {
+    const body = await safeJson(res);
+    return {
+      ok: false,
+      status: res.status,
+      error:
+        "读取草稿失败(HTTP " +
+        res.status +
+        "):" +
+        ((body && (body.error || body.message)) || ""),
+    };
+  }
+  const draft = await safeJson(res);
+  return { ok: true, draft };
+}
+
+// 写回草稿:先 GET 最新草稿(拿最新 hash/features 避免乐观锁冲突)→ POST
+async function injectModify(appId, graphText, adapter) {
+  if (!appId) return { ok: false, error: "缺少 appId" };
+  if (!graphText) return { ok: false, error: "graphText 为空" };
+  if (!adapter || !adapter.console) return { ok: false, error: "adapter 缺失" };
+
+  let graph;
+  try {
+    graph = JSON.parse(graphText);
+  } catch (e) {
+    return { ok: false, error: "graph.json 解析失败:" + ((e && e.message) || e) };
+  }
+
+  // 1) 先 GET 最新草稿,拿最新 hash/features/env 变量
+  const g = await getDraft(appId, adapter);
+  if (!g.ok) return g;
+  const draft = g.draft || {};
+
+  const postCfg =
+    adapter.console.endpoints && adapter.console.endpoints.draftPost;
+  const postUrl = consoleUrl(
+    adapter,
+    (postCfg && postCfg.path) || draftPath(adapter),
+    appId
+  );
+
+  const body = {
+    graph,
+    features: draft.features || {},
+    hash: draft.hash || null,
+    environment_variables: draft.environment_variables || [],
+    conversation_variables: draft.conversation_variables || [],
+  };
+
+  const headers = buildHeaders(adapter);
+  let res;
+  try {
+    res = await fetch(postUrl, {
+      method: "POST",
+      headers,
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    return { ok: false, error: "写回草稿失败:" + ((e && e.message) || e) };
+  }
+
+  if (res.status === 200) {
+    const respBody = await safeJson(res);
+    return { ok: true, hash: respBody && respBody.hash, result: respBody };
+  }
+
+  const respBody = await safeJson(res);
+  const msg = respBody && (respBody.error || respBody.message);
+  // 409/400 视为可重试失败(409=乐观锁 hash 冲突,提示重试)
+  return {
+    ok: false,
+    status: res.status,
+    error:
+      "写回草稿失败(HTTP " + res.status + "):" + (msg || "") +
+      (res.status === 409 ? "(草稿已被其它操作修改,请重试)" : ""),
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return;
 
@@ -184,6 +300,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "indify:injectCreate") {
     injectCreate(message.yamlText, message.adapter)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+    return true;
+  }
+
+  if (message.type === "indify:getDraft") {
+    getDraft(message.appId, message.adapter)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+    return true;
+  }
+
+  if (message.type === "indify:injectModify") {
+    injectModify(message.appId, message.graphText, message.adapter)
       .then(sendResponse)
       .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
     return true;

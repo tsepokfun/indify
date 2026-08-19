@@ -121,6 +121,26 @@ function workflowYaml() {
   ].join("\n");
 }
 
+// modify 模式产物:新 graph(就地写回用)
+function graphJson() {
+  return JSON.stringify(
+    {
+      nodes: [
+        { id: "start", type: "custom", data: { type: "start", title: "开始" }, position: { x: 0, y: 0 } },
+        { id: "n_classify", type: "custom", data: { type: "question_classifier", title: "工单分类(已修改)" }, position: { x: 200, y: 0 } },
+        { id: "end", type: "custom", data: { type: "end", title: "结束" }, position: { x: 400, y: 0 } },
+      ],
+      edges: [
+        { id: "e1", source: "start", target: "n_classify", sourceHandle: "output", targetHandle: "input" },
+        { id: "e2", source: "n_classify", target: "end", sourceHandle: "class_1", targetHandle: "input" },
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    },
+    null,
+    2
+  );
+}
+
 // ---------- WS 帧编解码(极简,无第三方依赖) ----------
 function encodeFrame(opcode, payloadBuf) {
   const len = payloadBuf.length;
@@ -297,7 +317,8 @@ async function route(req, res) {
       mode: body.mode || "create",
       spec: body.spec || "",
       phase: "queued",
-      sessionId: body.sessionId || null,
+      sessionId: body.sessionId || "sess_" + Math.random().toString(36).slice(2, 10),
+      context: body.context || null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       appId: null,
@@ -367,6 +388,7 @@ async function route(req, res) {
     if (file === "ir.json") content = irJson();
     else if (file === "result.json") content = resultJson(task);
     else if (file === "workflow.yaml") content = workflowYaml();
+    else if (file === "graph.json") content = graphJson();
     else return json(res, 404, { error: "artifact not found" });
     res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Content-Length": Buffer.byteLength(content) });
     return res.end(content);

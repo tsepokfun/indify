@@ -33,6 +33,29 @@ Builder Agent 的职责(它只产出 IR)。
 - **修改(modify)**:DSL→IR 拿 IR 改,IR→DSL 产出的 graph 走草稿 API 写回(不走 YAML)。
 - 脚本只处理**对象**;YAML 解析/序列化在 CLI 与 `tests/round-trip.mjs` 内完成。
 
+### 2.1 修改(modify)流程 —— 就地更新,无 YAML 往返
+
+```
+① Bridge 把当前草稿 graph(JSON)写入 generated/{taskId}/current-graph.json
+② Agent 读取 current-graph.json(它就是 DSL 的 workflow.graph:nodes/edges/viewport)
+③ 直接在 graph 结构上做结构语义修改(遵守 §4 保真纪律)
+④ 写 generated/{taskId}/graph.json(新 graph)+ result.json{status:"draft-ready"}
+⑤ 用户确认后:再校验 graph.json,更新 result.json{status:"ready"}
+⑥ 扩展把 graph.json 经草稿 API(POST /apps/{app_id}/workflows/draft)写回并刷新画布
+```
+
+**modify 模式纪律(Agent 必读):**
+1. **保真优先**:未触及的节点 `data`、`canvas`、边 `data/zIndex`、`viewport` 一律原样保留;
+   新增节点按 node-catalog 默认 data 构造,id 全图唯一(可用短语义 id,如 `n_llm_2`)。
+2. **删节点时同步删引用**:所有指向被删节点的边、其他节点 data 里的
+   `value_selector`/`{{#id.var#}}` 引用必须一并清理或改指,否则校验会抓出悬空引用。
+3. **改连线** = 改 `edges` 数组(含 source/sourceHandle/target/targetHandle 与边的
+   `data.sourceType/targetType`);条件分支节点(if-else/question-classifier)的分支 handle
+   与 `data.cases[].case_id` 要保持一致。
+4. **校验**:`node scripts/validate.mjs generated/{taskId}/graph.json` —— 注意 graph.json 是
+   `workflow.graph` 对象,不是完整 DSL;用 `--graph` 参数校验(见 validate.mjs 用法)。
+5. **不要**把 graph 转回 YAML 再导入(那只会新建应用);修改只走草稿写回。
+
 ## 3. IR 契约(唯一稳定接口)
 
 > 权威定义见 `DESIGN.md` §6。此处是执行要点;`irVersion` 恒 `"1.0"`。

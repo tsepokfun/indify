@@ -216,10 +216,25 @@
       font-size: 12px;
     }
     .result-link a:hover { text-decoration: underline; }
+    .session-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 6px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border);
+    }
+    .session-row span { font-size: 12px; color: var(--muted); }
     footer {
       background: var(--panel-bg);
       border-top: 1px solid var(--border);
       padding: 10px 12px;
+    }
+    #mode-hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 6px;
     }
     .composer {
       display: flex;
@@ -269,14 +284,15 @@
     <div id="user-messages"></div>
     <div id="task-card"></div>
     <div id="empty-hint" class="placeholder">
-      输入需求,生成你的第一个 Dify 工作流。<br>
+      输入需求,生成或修改你的 Dify 工作流。<br>
       例如:「做一个客服工单分类工作流,按情绪和主题分派」。
     </div>
   </main>
 
   <footer>
+    <div id="mode-hint">将新建工作流</div>
     <div class="composer">
-      <textarea id="chat-input" placeholder="描述你想要的工作流…(Enter 发送,Shift+Enter 换行)"></textarea>
+      <textarea id="chat-input" placeholder="描述你想要的工作流或修改…(Enter 发送,Shift+Enter 换行)"></textarea>
       <button id="send-btn">发送</button>
     </div>
   </footer>
