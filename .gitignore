@@ -1,0 +1,16 @@
+# Ignore actual .env files (keep only .env.example files in git)
+*.env
+!*.env.example
+
+# Indify 项目本地配置
+.indifyrc.yaml
+
+# 运行时数据与生成产物
+volumes/
+generated/
+
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+*.tsbuildinfo
