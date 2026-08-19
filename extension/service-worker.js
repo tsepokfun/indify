@@ -1,18 +1,21 @@
-// Indify service worker — M1 骨架
+// Indify service worker — M2(新建链路 U1)
 // 职责:
 //   1. 持有与 Indify Bridge 的 WebSocket 连接(ws://127.0.0.1:39181/v1/events)
 //   2. 断线指数退避重连(1s/2s/4s/…封顶 30s)+ 心跳保活
-//   3. 对外广播状态(chrome.runtime.sendMessage → {type:"indify:status"})
-//   4. 监听 content script 上报的应用上下文,并按需 ping / 拉取最新上下文
-// 注意:M2 起在此解析 Bridge 的任务进度帧(task.progress / task.result / …)。
+//   3. HTTP 调用封装 bridgeFetch(BASE=http://127.0.0.1:39181,token 在 storage.local.bridgeToken)
+//   4. 任务路由:submitTask / decision / getArtifact / getAdapter / retryInject
+//   5. 解析 WS 的 task.frame → 广播给面板;status 变 ready 时自动触发注入编排(幂等)
+//   6. 监听 content script 上报的应用上下文
 
 const BRIDGE_WS_URL = "ws://127.0.0.1:39181/v1/events";
+const BRIDGE_BASE = "http://127.0.0.1:39181";
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const HEARTBEAT_INTERVAL_MS = 20000; // 心跳发送间隔
 const STALE_THRESHOLD_MS = 60000; // 超过该时长未收到任何帧,判定连接僵死,强制重连
 const CONTEXT_REFRESH_INTERVAL_MS = 30000; // 周期 ping content script 刷新上下文
+const ADAPTER_VERSION = "1.16.1";
 
 let bridgeState = {
   connected: false,
@@ -22,6 +25,9 @@ let bridgeState = {
 let context = {}; // 最近一次 content script 上报的应用上下文
 let contextTabId = null; // 上报上下文的标签页 id
 
+let currentTask = null; // 当前任务(含 inject 子状态),持久化到 storage.session
+let injectedTaskIds = new Set(); // 已完成注入编排的任务,保证 ready 帧幂等
+
 let ws = null;
 let reconnectDelay = RECONNECT_BASE_MS;
 let reconnectTimer = null;
@@ -29,30 +35,38 @@ let heartbeatTimer = null;
 let contextRefreshTimer = null;
 let lastActivityAt = 0;
 
+let adapterCache = null; // adapter JSON 内存缓存(亦落 storage.local)
+
 // ---------- 状态持久化(面板重开可恢复) ----------
 async function persistState() {
   try {
     await chrome.storage.session.set({
       bridge: bridgeState,
       context: context,
+      currentTask: currentTask,
+      injectedTasks: [...injectedTaskIds],
     });
   } catch (e) {
-    // storage.session 偶发不可用时降级为纯内存态,不影响骨架运行
     console.warn("[Indify] persistState 失败:", e);
   }
 }
 
 async function restoreState() {
   try {
-    const data = await chrome.storage.session.get(["bridge", "context"]);
+    const data = await chrome.storage.session.get([
+      "bridge",
+      "context",
+      "currentTask",
+      "injectedTasks",
+    ]);
     if (data && data.bridge) {
       bridgeState = { ...bridgeState, ...data.bridge };
-      // 持久化的 connected 只反映历史状态;连接生命周期由本 SW 实时维护,
-      // 启动时先恢复为未连接,待 connect() 成功后再翻转为 true。
-      bridgeState.connected = false;
+      bridgeState.connected = false; // 连接生命周期由本 SW 实时维护
     }
-    if (data && data.context) {
-      context = data.context;
+    if (data && data.context) context = data.context;
+    if (data && data.currentTask) currentTask = data.currentTask;
+    if (Array.isArray(data && data.injectedTasks)) {
+      injectedTaskIds = new Set(data.injectedTasks);
     }
   } catch (e) {
     console.warn("[Indify] restoreState 失败:", e);
@@ -66,14 +80,82 @@ function broadcastStatus() {
     bridge: { ...bridgeState },
     context: { ...context },
   };
-  // 广播到所有扩展上下文(panel / content script);无接收者时静默失败
   chrome.runtime.sendMessage(message).catch(() => {});
   persistState();
 }
 
+function broadcastTask(task) {
+  chrome.runtime
+    .sendMessage({ type: "indify:task", task: { ...task } })
+    .catch(() => {});
+}
+
+// ---------- Bridge HTTP 封装 ----------
+async function getToken() {
+  try {
+    const { bridgeToken } = await chrome.storage.local.get("bridgeToken");
+    return bridgeToken || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+// 返回 { ok, status, data, error? };data 优先 JSON,失败回退为原始文本
+async function bridgeFetch(method, path, body) {
+  let res;
+  try {
+    const headers = { "Content-Type": "application/json" };
+    const token = await getToken();
+    if (token) headers["X-Indify-Token"] = token;
+    const init = { method, headers };
+    if (body !== undefined) init.body = JSON.stringify(body);
+    res = await fetch(BRIDGE_BASE + path, init);
+  } catch (e) {
+    return { ok: false, status: 0, data: null, error: "Bridge 不可达:" + (e && e.message || e) };
+  }
+  const text = await res.text().catch(() => "");
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      data = text;
+    }
+  }
+  return { ok: res.ok, status: res.status, data };
+}
+
+function extractBridgeError(res) {
+  if (res && res.error) return res.error;
+  if (res && res.data && typeof res.data === "object") {
+    return res.data.error || res.data.message || "HTTP " + res.status;
+  }
+  if (res && typeof res.data === "string") return res.data;
+  return "HTTP " + (res && res.status ? res.status : "?");
+}
+
+// ---------- adapter 缓存 ----------
+async function getAdapter() {
+  if (adapterCache) return adapterCache;
+  try {
+    const { adapter } = await chrome.storage.local.get("adapter");
+    if (adapter && adapter.difyVersion) {
+      adapterCache = adapter;
+      return adapterCache;
+    }
+  } catch (e) {
+    /* 忽略 */
+  }
+  const res = await bridgeFetch("GET", `/v1/adapter/${ADAPTER_VERSION}`);
+  if (res.ok && res.data && typeof res.data === "object") {
+    adapterCache = res.data;
+    chrome.storage.local.set({ adapter: res.data }).catch(() => {});
+    return adapterCache;
+  }
+  return null;
+}
+
 // ---------- WebSocket 连接 ----------
-// Bridge 认证:token 存于 chrome.storage.local.bridgeToken(用户安装时粘贴,
-// 值在 .indifyrc.yaml);未配置时按无 token 连接,Bridge 会拒绝握手(状态显示未连接)。
 async function buildWsUrl() {
   try {
     const { bridgeToken } = await chrome.storage.local.get("bridgeToken");
@@ -81,7 +163,7 @@ async function buildWsUrl() {
       return `${BRIDGE_WS_URL}?token=${encodeURIComponent(bridgeToken)}`;
     }
   } catch (e) {
-    // 忽略,退回无 token 连接
+    /* 忽略 */
   }
   return BRIDGE_WS_URL;
 }
@@ -92,14 +174,13 @@ async function connect() {
   try {
     ws = new WebSocket(url);
   } catch (e) {
-    // 环境不支持或 URL 非法
     console.warn("[Indify] 创建 WebSocket 失败:", e);
     scheduleReconnect();
     return;
   }
 
   ws.onopen = () => {
-    reconnectDelay = RECONNECT_BASE_MS; // 连接成功,重置退避
+    reconnectDelay = RECONNECT_BASE_MS;
     lastActivityAt = Date.now();
     bridgeState = { ...bridgeState, connected: true, url };
     startHeartbeat();
@@ -109,15 +190,23 @@ async function connect() {
 
   ws.onmessage = (event) => {
     lastActivityAt = Date.now();
-    // 骨架阶段只记录;M2 起在此解析 Bridge 的任务进度帧
-    console.debug(
-      "[Indify] ws 帧:",
-      typeof event.data === "string" ? event.data : "(binary)"
-    );
+    let frame;
+    try {
+      frame = JSON.parse(typeof event.data === "string" ? event.data : "");
+    } catch (e) {
+      return; // 非 JSON 帧忽略
+    }
+    if (!frame || typeof frame.type !== "string") return;
+
+    if (frame.type === "bridge.status") {
+      handleBridgeStatus(frame.data);
+    } else if (frame.type === "task.frame") {
+      handleTaskFrame(frame.data);
+    }
   };
 
   ws.onerror = () => {
-    // WebSocket 规范:onerror 后必然触发 onclose,重连统一由 onclose 处理
+    // onerror 后必触发 onclose,重连由 onclose 处理
     console.warn("[Indify] ws error");
   };
 
@@ -152,15 +241,11 @@ function startHeartbeat() {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-    // 客户端心跳帧:M2 与 Bridge 对齐帧格式前,此为占位
     try {
       ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
     } catch (e) {
       console.warn("[Indify] 心跳发送失败:", e);
     }
-
-    // 判死:长时间无任何帧 → 强制关闭,触发 onclose → 重连
     if (Date.now() - lastActivityAt > STALE_THRESHOLD_MS) {
       console.warn("[Indify] 连接疑似僵死,强制重连");
       try {
@@ -179,22 +264,126 @@ function stopHeartbeat() {
   }
 }
 
+// ---------- Bridge 帧处理 ----------
+function handleBridgeStatus(data) {
+  // 骨架仅透传 bridge 连接态;difyVersion/state/note 供面板展示(可选)
+  if (data && typeof data === "object") {
+    bridgeState = { ...bridgeState, ...data };
+  }
+  broadcastStatus();
+}
+
+function mergeTask(existing, incoming) {
+  const inject = existing && existing.inject ? existing.inject : undefined;
+  return { ...existing, ...incoming, inject };
+}
+
+function handleTaskFrame(data) {
+  if (!data || !data.taskId) return;
+
+  if (!currentTask || currentTask.taskId === data.taskId) {
+    currentTask = mergeTask(currentTask, data);
+  } else {
+    // 理论上串行只会有一个任务;防御:收到陌生任务帧则切换
+    currentTask = { ...data, inject: { status: "idle" } };
+  }
+
+  persistState();
+  broadcastTask(currentTask);
+
+  if (data.status === "ready") {
+    triggerInject(data.taskId);
+  }
+}
+
+// ---------- 注入编排 ----------
+const injecting = new Set();
+
+function setInjectStatus(taskId, inject) {
+  if (!currentTask || currentTask.taskId !== taskId) return;
+  currentTask.inject = { ...(currentTask.inject || {}), ...inject };
+  persistState();
+  broadcastTask(currentTask);
+}
+
+function triggerInject(taskId) {
+  if (injecting.has(taskId) || injectedTaskIds.has(taskId)) return; // 幂等
+  injecting.add(taskId);
+  doInject(taskId)
+    .then(() => {
+      injectedTaskIds.add(taskId);
+      persistState();
+    })
+    .catch((e) => {
+      setInjectStatus(taskId, { status: "failed", error: String((e && e.message) || e) });
+    })
+    .finally(() => {
+      injecting.delete(taskId);
+    });
+}
+
+async function doInject(taskId) {
+  // 1) 无 Dify 标签页 → 提示面板,保持 ready,等用户重试注入
+  if (contextTabId == null) {
+    setInjectStatus(taskId, { status: "needDify" });
+    return;
+  }
+
+  // 2) 取 adapter + workflow.yaml
+  const adapter = await getAdapter();
+  if (!adapter) throw new Error("无法获取 adapter(请确认 Bridge 的 /v1/adapter/1.16.1 可用)");
+
+  const yamlRes = await bridgeFetch("GET", `/v1/artifacts/${taskId}/workflow.yaml`);
+  if (!yamlRes.ok) {
+    throw new Error(`获取 workflow.yaml 失败(HTTP ${yamlRes.status})`);
+  }
+  const yamlText = typeof yamlRes.data === "string" ? yamlRes.data : JSON.stringify(yamlRes.data);
+
+  setInjectStatus(taskId, { status: "injecting" });
+
+  // 3) 交给 content script 执行控制台导入
+  let injectResult;
+  try {
+    injectResult = await chrome.tabs.sendMessage(contextTabId, {
+      type: "indify:injectCreate",
+      yamlText,
+      adapter,
+    });
+  } catch (e) {
+    throw new Error("content script 注入失败(确认 Dify 页面已打开):" + ((e && e.message) || e));
+  }
+
+  if (!injectResult || injectResult.ok !== true) {
+    throw new Error((injectResult && injectResult.error) || "导入失败(未知错误)");
+  }
+
+  const appId = injectResult.appId;
+  const pattern = adapter.urls && adapter.urls.workflowPagePattern;
+  const appUrl = pattern ? pattern.replace("{app_id}", appId || "") : undefined;
+
+  // 4) 通知 Bridge 注入完成(真实 Bridge 会随后推 injecting→done 帧)
+  await bridgeFetch("POST", `/v1/tasks/${taskId}/injected`, { appId, appUrl });
+
+  // 5) 打开新应用工作流页(原生画布 = 最终人工闸口)
+  if (appUrl && contextTabId != null) {
+    chrome.tabs.update(contextTabId, { url: appUrl }).catch(() => {});
+  }
+
+  setInjectStatus(taskId, { status: "done", appId, appUrl });
+}
+
 // ---------- content script 上下文刷新 ----------
-// 向已跟踪的 Dify 标签页发消息(messageType = indify:getContext | indify:ping),
-// 用其响应刷新本 SW 缓存的 context。
 async function requestContextFromContent(messageType) {
   if (contextTabId == null) return false;
   try {
-    const response = await chrome.tabs.sendMessage(contextTabId, {
-      type: messageType,
-    });
+    const response = await chrome.tabs.sendMessage(contextTabId, { type: messageType });
     if (response && response.context) {
       context = { ...response.context };
       broadcastStatus();
       return true;
     }
   } catch (e) {
-    // 标签页已关闭或 content script 未注入:忽略,保留最后一次已知上下文
+    // 标签页已关闭或 content script 未注入
   }
   return false;
 }
@@ -206,39 +395,128 @@ function startContextRefresh() {
   }, CONTEXT_REFRESH_INTERVAL_MS);
 }
 
+// ---------- 任务消息处理(返回 Promise 作为 sendResponse) ----------
+async function submitTask(message) {
+  const spec = (message.spec || "").trim();
+  if (!spec) return { ok: false, error: "需求不能为空" };
+
+  const body = { mode: message.mode || "create", spec };
+  if (message.sessionId) body.sessionId = message.sessionId;
+  if (context && context.appId) body.context = { appId: context.appId };
+
+  const res = await bridgeFetch("POST", "/v1/tasks", body);
+  if (!res.ok) return { ok: false, error: extractBridgeError(res) };
+
+  const data = res.data || {};
+  currentTask = {
+    taskId: data.taskId,
+    status: data.status || "queued",
+    mode: body.mode,
+    spec,
+    sessionId: data.sessionId,
+    inject: { status: "idle" },
+  };
+  persistState();
+  broadcastTask(currentTask);
+  return { ok: true, taskId: data.taskId, status: data.status };
+}
+
+async function sendDecision(message) {
+  const { taskId, action, feedback } = message;
+  if (!taskId || !action) return { ok: false, error: "缺少 taskId 或 action" };
+  const res = await bridgeFetch("POST", `/v1/tasks/${taskId}/decision`, { action, feedback });
+  if (!res.ok) return { ok: false, error: extractBridgeError(res) };
+  return { ok: true };
+}
+
+async function getArtifact(message) {
+  const { taskId, file } = message;
+  if (!taskId || !file) return { ok: false, error: "缺少 taskId 或 file" };
+  if (!/^[A-Za-z0-9._-]+$/.test(file)) return { ok: false, error: "非法文件名" };
+  const res = await bridgeFetch("GET", `/v1/artifacts/${taskId}/${file}`);
+  if (!res.ok) {
+    return { ok: false, status: res.status, error: `产物不存在或获取失败(HTTP ${res.status})` };
+  }
+  return { ok: true, text: typeof res.data === "string" ? res.data : JSON.stringify(res.data) };
+}
+
+async function getAdapterForPanel() {
+  const adapter = await getAdapter();
+  if (!adapter) return { ok: false, error: "无法获取 adapter" };
+  return { ok: true, adapter };
+}
+
+async function retryInject(message) {
+  const { taskId } = message;
+  if (!taskId) return { ok: false, error: "缺少 taskId" };
+  if (injectedTaskIds.has(taskId)) {
+    return { ok: true, note: "该任务已注入过" };
+  }
+  if (currentTask && currentTask.taskId === taskId) {
+    currentTask.inject = { status: "idle" };
+    broadcastTask(currentTask);
+  }
+  triggerInject(taskId);
+  return { ok: true };
+}
+
 // ---------- 消息路由 ----------
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+function handleContext(message, sender) {
+  context = { ...(message.context || {}) };
+  if (sender.tab && sender.tab.id != null) contextTabId = sender.tab.id;
+  broadcastStatus();
+}
+
+async function handleGetStatus() {
+  broadcastStatus();
+  if (currentTask) broadcastTask(currentTask);
+  requestContextFromContent("indify:getContext"); // fire-and-forget 刷新
+  return {
+    bridge: { ...bridgeState },
+    context: { ...context },
+    task: currentTask ? { ...currentTask } : null,
+  };
+}
+
+chrome.runtime.onMessage.addListener((message, sender) => {
   if (!message || typeof message.type !== "string") return;
 
   switch (message.type) {
-    case "indify:context": {
-      // content script 上报应用上下文
-      context = { ...(message.context || {}) };
-      if (sender.tab && sender.tab.id != null) contextTabId = sender.tab.id;
-      broadcastStatus();
-      break;
-    }
-    case "indify:getStatus": {
-      // panel 请求当前状态:先广播当前快照,再向 content script 拉取新鲜上下文
-      broadcastStatus();
-      requestContextFromContent("indify:getContext");
-      break;
-    }
+    case "indify:context":
+      handleContext(message, sender);
+      return;
+
+    case "indify:getStatus":
+      return handleGetStatus();
+
+    case "indify:submitTask":
+      return submitTask(message);
+
+    case "indify:decision":
+      return sendDecision(message);
+
+    case "indify:getArtifact":
+      return getArtifact(message);
+
+    case "indify:getAdapter":
+      return getAdapterForPanel();
+
+    case "indify:retryInject":
+      return retryInject(message);
+
     default:
-      break;
+      return;
   }
-  // 不 sendResponse;状态通过广播送达
 });
 
 // ---------- 标签页生命周期 ----------
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === contextTabId) {
     contextTabId = null;
-    // 保留最后上下文仅供展示;M2 起可在此清理过期状态
   }
 });
 
-// token 变更(panel 保存)→ 立即重连
+// ---------- token 变更 → 立即重连 ----------
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.bridgeToken) {
     console.info("[Indify] bridgeToken 已更新,重连...");
@@ -263,7 +541,8 @@ chrome.runtime.onInstalled.addListener(() => {
 (async function init() {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   await restoreState();
-  broadcastStatus(); // 立即对外广播(含未连接的 Bridge 状态与缓存上下文)
+  broadcastStatus();
+  if (currentTask) broadcastTask(currentTask);
   connect();
   startContextRefresh();
 })();
