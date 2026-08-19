@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Indify</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel-bg: #ffffff;
+      --border: #e5e7eb;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --ok: #16a34a;
+      --off: #9ca3af;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    header {
+      background: var(--panel-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 12px;
+    }
+    .brand {
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .dot-ok { background: var(--ok); }
+    .dot-off { background: var(--off); }
+    .status-row span:last-child { font-size: 12px; color: var(--muted); }
+    #context-text {
+      font-size: 12px;
+      color: var(--muted);
+      word-break: break-all;
+    }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 12px;
+    }
+    .placeholder {
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+      margin-top: 32px;
+    }
+    #token-box {
+      display: none;
+      margin-top: 8px;
+    }
+    #token-box.show { display: block; }
+    #token-input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: monospace;
+    }
+    #token-save {
+      margin-top: 6px;
+      font-size: 12px;
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 6px;
+      line-height: 1.6;
+    }
+    footer {
+      background: var(--panel-bg);
+      border-top: 1px solid var(--border);
+      padding: 10px 12px;
+    }
+    #chat-input {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
+      resize: none;
+      color: var(--muted);
+      background: #f3f4f6;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Indify</div>
+    <div class="status-row">
+      <span id="bridge-dot" class="dot dot-off"></span>
+      <span id="bridge-text">Bridge 未连接</span>
+    </div>
+    <div id="context-text">未检测到 Dify 页面(请打开 http://localhost)</div>
+    <div id="token-box">
+      <input id="token-input" type="password" placeholder="粘贴 Bridge token(.indifyrc.yaml 的 token 值)">
+      <button id="token-save">保存并重连</button>
+      <div class="hint">Bridge 在 ws://127.0.0.1:39181 运行;token 只保存在本机 chrome.storage.local。</div>
+    </div>
+  </header>
+
+  <main id="messages">
+    <div class="placeholder">
+      骨架版(M1-C)<br>
+      M2 起这里显示:对话消息 · 任务进度 · 结构预览卡片<br>
+      以及「确认 / 修正」按钮(HITL 闸口)。
+    </div>
+  </main>
+
+  <footer>
+    <textarea id="chat-input" disabled placeholder="输入框将在 M2 启用(当前为骨架占位)"></textarea>
+  </footer>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

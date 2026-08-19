@@ -9,6 +9,9 @@
 volumes/
 generated/
 
+# skill 测试产物
+skills/dify-workflow-dsl/tests/.out/
+
 # 依赖与构建产物
 node_modules/
 dist/

@@ -1,0 +1,18 @@
+{
+  "name": "dify-workflow-dsl",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Indify DSL 适配层(skill):Dify 1.16.1 DSL YAML(0.7.0)↔ IR 的转换与校验。全系统版本防波堤的底座。",
+  "scripts": {
+    "round-trip": "node tests/round-trip.mjs",
+    "validate": "node scripts/validate.mjs",
+    "validate:selftest": "node scripts/validate.mjs --selftest",
+    "dsl2ir": "node scripts/dsl_to_ir.mjs",
+    "ir2dsl": "node scripts/ir_to_dsl.mjs",
+    "test": "node tests/round-trip.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.7.0"
+  }
+}

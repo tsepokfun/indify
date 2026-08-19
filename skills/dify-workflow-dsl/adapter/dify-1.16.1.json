@@ -1,0 +1,75 @@
+{
+  "adapterVersion": "1.0.0",
+  "difyVersion": "1.16.1",
+  "dslVersion": "0.7.0",
+  "generatedFrom": "M0 实测(2026-08-19)+ dify-web 1.16.1 构建产物 oRPC 契约 + api 容器源码",
+  "console": {
+    "baseUrl": "http://localhost",
+    "apiPrefix": "/console/api",
+    "login": {
+      "path": "/login",
+      "method": "POST",
+      "payload": { "email": "string", "password": "string(base64 of plaintext)", "language": "zh-Hans", "remember_me": true },
+      "note": "登录由用户在浏览器完成;扩展/content script 同源复用 cookie,不代持密码"
+    },
+    "csrf": {
+      "headerName": "X-CSRF-Token",
+      "cookieName": "csrf_token",
+      "appliesToAllMethodsExcept": ["OPTIONS"],
+      "exemptPaths": ["/apps/{app_id}/workflows/draft"],
+      "note": "请求头 X-CSRF-Token 必须等于 cookie csrf_token;draft 路径白名单豁免"
+    },
+    "endpoints": {
+      "appsList": { "method": "GET", "path": "/apps" },
+      "createApp": { "method": "POST", "path": "/apps", "payload": { "name": "string", "mode": "workflow|advanced-chat|chat|agent-chat", "description": "string?" } },
+      "appDetail": { "method": "GET", "path": "/apps/{app_id}" },
+      "importDsl": {
+        "method": "POST",
+        "path": "/apps/imports",
+        "payload": { "mode": "yaml-content | yaml-url", "yaml_content": "string?", "yaml_url": "string?", "name": "string?", "description": "string?", "icon_type": "string?", "icon": "string?", "icon_background": "string?", "app_id": "string?" },
+        "responses": {
+          "200": { "status": "completed | completed-with-warnings", "app_id": "string", "current_dsl_version": "string", "imported_dsl_version": "string", "warnings": "string[]" },
+          "202": { "status": "pending", "import_id": "string", "app_id": "string?" },
+          "400": { "status": "failed", "error": "string" }
+        },
+        "note": "旧版 DSL 自动迁移(0.3.1→0.7.0 实测);202 时需继续调用 importConfirm"
+      },
+      "importConfirm": { "method": "POST", "path": "/apps/imports/{import_id}/confirm" },
+      "importCheckDependencies": { "method": "GET", "path": "/apps/imports/{app_id}/check-dependencies" },
+      "exportDsl": { "method": "GET", "path": "/apps/{app_id}/export", "query": { "include_secret": "bool=false", "workflow_id": "string?" }, "responseEnvelope": { "data": "string(DSL YAML 文本)" } },
+      "dslVersion": { "method": "GET", "path": "/app-dsl-version", "response": { "app_dsl_version": "string" } },
+      "draftGet": {
+        "method": "GET",
+        "path": "/apps/{app_id}/workflows/draft",
+        "response": { "id": "string", "graph": "object", "features": "object", "hash": "string", "version": "string", "marked_name": "string", "marked_comment": "string", "created_by": "object?", "created_at": "int", "updated_by": "object?", "updated_at": "int", "tool_published": "bool", "environment_variables": "array", "conversation_variables": "array", "rag_pipeline_variables": "array" }
+      },
+      "draftPost": {
+        "method": "POST",
+        "path": "/apps/{app_id}/workflows/draft",
+        "payload": { "graph": "object(必填)", "features": "object(必填)", "hash": "string|null(乐观锁,传 GET 返回的 hash)", "_is_collaborative": "bool=false", "environment_variables": "array", "conversation_variables": "array" },
+        "response": { "result": "success", "hash": "string(新)", "updated_at": "int" },
+        "note": "CSRF 豁免;hash 不匹配返回冲突错误,此时需重新 GET draft 再写"
+      },
+      "draftPublish": { "method": "GET|POST", "path": "/apps/{app_id}/workflows/publish" },
+      "defaultBlockConfigs": { "method": "GET", "path": "/apps/{app_id}/workflows/default-workflow-block-configs" },
+      "systemFeatures": { "method": "GET", "path": "/system-features", "note": "免登录,用于版本/功能探测" }
+    }
+  },
+  "versionDetection": {
+    "order": ["httpHeader", "endpoint"],
+    "httpHeader": { "headerName": "X-Version", "note": "nginx 未暴露时不可用" },
+    "endpoint": { "path": "/app-dsl-version", "map": { "app_dsl_version": "0.7.0 => dify 1.16.x" } },
+    "fallback": "1.16.1(用户可在 .indifyrc.yaml 固定)"
+  },
+  "urls": {
+    "consoleRoot": "http://localhost",
+    "workflowPagePattern": "http://localhost/app/{app_id}/workflow",
+    "appsPage": "http://localhost/apps"
+  },
+  "dsh": {
+    "baseUrl": "http://127.0.0.1:3080",
+    "apiPath": "/api",
+    "eventsMuxPath": "/api/events.mux",
+    "note": "详见 docs/m0-findings.md §1:POST /api/<method> + client-request 信封;mux 仅 WS(426 无 SSE 回退)"
+  }
+}

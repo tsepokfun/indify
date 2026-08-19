@@ -1,0 +1,23 @@
+{
+  "name": "@indify/bridge",
+  "version": "0.1.0",
+  "description": "Indify Bridge — 本地伴生服务:扩展 ↔ DSH /api 中转、任务状态、adapter 与产物文件通道",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prestart": "pnpm build",
+    "start": "node dist/server.js",
+    "serve": "node dist/server.js"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.0"
+  }
+}
