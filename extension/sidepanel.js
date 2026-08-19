@@ -121,6 +121,14 @@ function buildTaskCard(task, preview) {
     } else if (inj.status === "failed") {
       body += `<div class="task-error">注入失败:${escapeHtml(inj.error || "")}</div>
         <div class="btn-row"><button class="btn" data-action="retry-inject">重试注入</button></div>`;
+    } else if (inj.status === "importFailed") {
+      // 逃生舱:route B 导入失败 → 复制 YAML 手动导入(永远可用的降级,§8.1 第 4 步)
+      body += `<div class="task-error">自动导入失败:${escapeHtml(inj.error || "")}</div>
+        <div class="task-summary">逃生舱:复制 YAML 后在 Dify「应用列表 → 导入 DSL 文件」里手动导入。</div>
+        <div class="btn-row">
+          <button class="btn primary" data-action="copy-yaml">复制 YAML 到剪贴板</button>
+          <button class="btn" data-action="retry-inject">重试自动导入</button>
+        </div>`;
     } else {
       body += `<div class="task-summary">${isModify ? "已生成,写回画布中…" : "已生成,注入画布中…"}</div>`;
     }
@@ -377,6 +385,22 @@ async function doRetryInject(taskId) {
   }
 }
 
+// 逃生舱:从 Bridge 拉 workflow.yaml → 写入剪贴板,提示用户手动导入
+async function doCopyYaml(taskId) {
+  try {
+    const res = await sendMessagePromise({ type: "indify:getArtifact", taskId, file: "workflow.yaml" });
+    const text = res && res.ok ? res.text : null;
+    if (!text) {
+      pushSystemMessage("获取 workflow.yaml 失败:" + ((res && res.error) || "未知错误"));
+      return;
+    }
+    await navigator.clipboard.writeText(text);
+    pushSystemMessage("✅ YAML 已复制到剪贴板。请在 Dify「应用列表 → 导入 DSL 文件」里粘贴保存后手动导入。");
+  } catch (e) {
+    pushSystemMessage("复制失败:" + String((e && e.message) || e));
+  }
+}
+
 async function doNewSession() {
   const res = await sendMessagePromise({ type: "indify:newSession" });
   if (!res.ok) {
@@ -445,6 +469,9 @@ els.taskCard.addEventListener("click", (e) => {
       break;
     case "retry-inject":
       doRetryInject(task.taskId);
+      break;
+    case "copy-yaml":
+      doCopyYaml(task.taskId);
       break;
     case "open-app": {
       const url = btn.dataset.url;

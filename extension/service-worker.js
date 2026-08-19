@@ -429,7 +429,10 @@ async function doInject(taskId) {
   }
 
   if (!injectResult || injectResult.ok !== true) {
-    throw new Error((injectResult && injectResult.error) || "导入失败(未知错误)");
+    // 逃生舱(route B 失败):把状态标为 importFailed,面板提供「复制 YAML」+ 手动导入指引
+    const reason = (injectResult && injectResult.error) || "导入失败(未知错误)";
+    setInjectStatus(taskId, { status: "importFailed", error: reason });
+    return false;
   }
 
   const appId = injectResult.appId;
