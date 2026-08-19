@@ -4,6 +4,18 @@
 > 控制台 API 的版本细节只存在于本 skill 的 references 与 scripts;Builder Agent 只处理
 > IR(中间表示)的结构语义。Dify 升级时只改本 skill 与 adapter JSON,Agent 与扩展零改动。
 
+## 0. 当前版本指针(升级时唯一要改的声明)
+
+| 项 | 当前值 |
+|---|---|
+| Dify 版本 | **1.16.1** |
+| DSL 版本 | **0.7.0** |
+| references 目录 | `references/dify-1.16/`(dsl-structure / node-catalog / console-api) |
+| adapter | `adapter/dify-1.16.1.json` |
+
+> 所有版本化细节一律以上表为准;Builder Agent 与 Bridge 的提示词只引用「当前版本
+> references 目录」这一指针,不硬编码任何版本号。升级流程见 §8。
+
 ## 1. 职责与边界
 
 **你负责(必须由你扛,Builder Agent 不许碰):**

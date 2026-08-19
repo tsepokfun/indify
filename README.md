@@ -1,182 +1,78 @@
-## README for docker Deployment
+# Indify
 
-Welcome to the new `docker` directory for deploying Dify using Docker Compose. This README outlines the updates, deployment instructions, and migration details for existing users.
+**一句话**:Chrome 扩展聊天框 + 本地伴生服务(Bridge)+ DSL 适配层(skill)——用自然语言生成/修改
+Dify 工作流,改动立即呈现在原生 Dify 控制台画布上;Dify 升级时只更新 skill 与 adapter,扩展与 Bridge 代码零改动。
 
-### What's Updated
+目标版本:**Dify 1.16.1**(docker-compose 已钉死,控制台 `http://localhost`)。设计文档见 `DESIGN.md`;
+Dify 栈的 docker 部署细节见 `docs/dify-docker-deployment.md`。
 
-- **Certbot Container**: `docker-compose.yaml` now contains `certbot` for managing SSL certificates. This container automatically renews certificates and ensures secure HTTPS connections.\
-  For more information, refer to `docker/certbot/README.md`.
+## 架构
 
-- **Persistent Environment Variables**: Essential startup defaults are provided in `.env.example`, while local values are stored in `.env`, ensuring that your configurations persist across deployments.
-
-  > What is `.env`? </br> </br>
-  > The `.env` file is the local startup file. Copy it from `.env.example` for a default deployment. Optional advanced settings live in `envs/*.env.example` files.
-
-- **Unified Vector Database Services**: All vector database services are now managed from a single Docker Compose file `docker-compose.yaml`. You can switch between different vector databases by setting the `VECTOR_STORE` environment variable in your `.env` file.
-
-### How to Deploy Dify with `docker-compose.yaml`
-
-1. **Prerequisites**: Ensure Docker and Docker Compose v2.24.0 or later are installed on your system.
-2. **Environment Setup**:
-   - Navigate to the `docker` directory.
-   - Copy `.env.example` to `.env`.
-   - Customize `.env` when you need to change essential startup defaults. Copy optional files from `envs/` without the `.example` suffix when you need advanced settings.
-   - **Optional (for advanced deployments)**:
-     If you maintain a full `.env` file copied from `.env.example`, you may use the environment synchronization tool to keep it aligned with the latest `.env.example` updates while preserving your custom settings.
-     See the [Environment Variables Synchronization](#environment-variables-synchronization) section below.
-3. **Running the Services**:
-   - Execute `docker compose up -d` from the `docker` directory to start the services.
-   - To specify a vector database, set the `VECTOR_STORE` variable in your `.env` file to your desired vector database service, such as `milvus`, `weaviate`, or `opensearch`. See `envs/vectorstores/` for the full list of supported options.
-   ```bash
-   cp .env.example .env
-   docker compose up -d
-   ```
-
-4. **SSL Certificate Setup**:
-   - Refer to `docker/certbot/README.md` to set up SSL certificates using Certbot.
-5. **OpenTelemetry Collector Setup**:
-   - Copy `envs/core-services/shared.env.example` to `envs/core-services/shared.env`.
-   - Set `ENABLE_OTEL=true` and configure `OTLP_BASE_ENDPOINT`. Tune the other `OTEL_*` knobs in the same file if needed.
-
-### How to Deploy Middleware for Developing Dify
-
-1. **Middleware Setup**:
-   - Use the `docker-compose.middleware.yaml` for setting up essential middleware services like databases and caches.
-   - Navigate to the `docker` directory.
-   - Ensure the `middleware.env` file is created by running `cp envs/middleware.env.example middleware.env` (refer to the `envs/middleware.env.example` file).
-2. **Running Middleware Services**:
-   - Navigate to the `docker` directory.
-   - Execute `docker compose --env-file middleware.env -f docker-compose.middleware.yaml -p dify up -d` to start PostgreSQL/MySQL (per `DB_TYPE`) plus the bundled Weaviate instance.
-
-> Compose automatically loads `COMPOSE_PROFILES=${DB_TYPE:-postgresql},weaviate` from `middleware.env`, so no extra `--profile` flags are needed. Adjust variables in `middleware.env` if you want a different combination of services.
-
-### Migration for Existing Users
-
-For users migrating from the `docker-legacy` setup:
-
-1. **Review Changes**: Familiarize yourself with the new `.env` configuration and Docker Compose setup.
-2. **Transfer Customizations**:
-   - If you have customized configurations such as `docker-compose.yaml`, `ssrf_proxy/squid.conf`, or `nginx/conf.d/default.conf`, you will need to reflect these changes in the `.env` file you create.
-3. **Data Migration**:
-   - Ensure that data from services like databases and caches is backed up and migrated appropriately to the new structure if necessary.
-
-### Overview of `.env`, `.env.example`, and `envs/`
-
-- `.env.example` contains the essential default configuration for Docker Compose deployments.
-- `.env` contains local startup values copied from `.env.example` and any local changes.
-- `envs/*.env.example` files contain optional advanced configuration grouped by theme.
-
-Keep the root `.env.example` limited to variables required to start the default Docker Compose deployment.
-Do not add optional, advanced, provider-specific, or service-specific variables there; place them in the appropriate `envs/*.env.example` file instead.
-
-Docker Compose reads `envs/*.env` files when present, then reads `.env` last so values in `.env` take precedence.
-
-#### Key Modules and Customization
-
-- **Vector Database Services**: Depending on the type of vector database used (`VECTOR_STORE`), users can set specific endpoints, ports, and authentication details.
-- **Storage Services**: Depending on the storage type (`STORAGE_TYPE`), users can configure specific settings for S3, Azure Blob, Google Storage, etc.
-- **API and Web Services**: Users can define URLs and other settings that affect how the API and web frontend operate.
-
-#### Other notable variables
-
-The root `.env.example` file contains the essential startup settings. Optional and provider-specific settings are grouped in `envs/*.env.example` files. Here are some of the key sections and variables:
-
-1. **Common Variables**:
-
-   - `CONSOLE_API_URL`, `CONSOLE_WEB_URL`, `SERVICE_API_URL`, `APP_API_URL`, `APP_WEB_URL`: public URLs for the API and frontend services.
-   - `SERVER_CONSOLE_API_URL`: internal API origin used by web server-side requests and, when `INTERNAL_FILES_URL` is unset, as the default fallback for API-side internal file URL generation. Keep the default `http://api:5001` for standard Docker Compose deployments, and only change it when services must reach the API through a different internal address.
-   - `FILES_URL`, `INTERNAL_FILES_URL`: Public and internal base URLs for file downloads and previews.
-   - `ENDPOINT_URL_TEMPLATE`, `NEXT_PUBLIC_SOCKET_URL`, `TRIGGER_URL`: Additional service URLs.
-
-   See `.env.example` for the full list.
-
-2. **Server Configuration**:
-
-   - `LOG_LEVEL`, `DEBUG`, `FLASK_DEBUG`: Logging and debug settings.
-   - `SECRET_KEY`: A key for signing sessions, JWTs, and file URLs. Leave it empty to let Dify generate a persistent key in the storage directory, or set a unique value yourself.
-
-3. **Database Configuration**:
-
-   - `DB_USERNAME`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`: PostgreSQL database credentials and connection details.
-
-4. **Redis Configuration**:
-
-   - `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`: Redis server connection settings.
-   - `REDIS_KEY_PREFIX`: Optional global namespace prefix for Redis keys, topics, streams, and Celery Redis transport artifacts.
-
-5. **Celery Configuration**:
-
-   - `CELERY_BROKER_URL`: Configuration for Celery message broker.
-
-6. **Storage Configuration**:
-
-   - `STORAGE_TYPE`, `OPENDAL_SCHEME`, `OPENDAL_FS_ROOT`: Default local file storage settings. Optional storage backends are configured from the files under `envs/`.
-
-7. **Vector Database Configuration**:
-
-   - `VECTOR_STORE`: Type of vector database (e.g., `weaviate`, `milvus`). See `envs/vectorstores/` for the full list of supported options.
-   - Specific settings for each vector store like `WEAVIATE_ENDPOINT`, `MILVUS_URI`.
-
-8. **CORS Configuration**:
-
-   - `WEB_API_CORS_ALLOW_ORIGINS`, `CONSOLE_CORS_ALLOW_ORIGINS`: Settings for cross-origin resource sharing.
-
-9. **OpenTelemetry Configuration**:
-
-   - `ENABLE_OTEL`: Enable OpenTelemetry collector in api.
-   - `OTLP_BASE_ENDPOINT`: Endpoint for your OTLP exporter.
-
-10. **Other Service-Specific Environment Variables**:
-
-    - Each service like `nginx`, `redis`, `db`, and vector databases have specific environment variables that are directly referenced in the `docker-compose.yaml`.
-
-### Environment Variables Synchronization
-
-When upgrading Dify or pulling the latest changes, new environment variables may be introduced in `.env.example` only when they are required for startup,
-or in the optional files under `envs/` for advanced, provider-specific, and service-specific settings.
-
-If you use the default workflow, review `.env.example` and keep your `.env` aligned with essential startup values.
-
-If you maintain a customized `.env` file copied from `.env.example`, an optional environment variables synchronization tool is provided.
-
-> This tool performs a **one-way synchronization** from `.env.example` to `.env`.
-> Existing values in `.env` are never overwritten automatically.
-
-#### `dify-env-sync.sh` (Optional)
-
-This script compares your current `.env` file with the latest `.env.example` template and helps safely apply new or updated environment variables.
-
-**What it does**
-
-- Creates a backup of the current `.env` file before making any changes
-- Synchronizes newly added environment variables from `.env.example`
-- Preserves all existing custom values in `.env`
-- Displays differences and variables removed from `.env.example` for review
-
-**Backup behavior**
-
-Before synchronization, the current `.env` file is saved to the `env-backup/` directory with a timestamped filename
-(e.g. `env-backup/.env.backup_20231218_143022`).
-
-**When to use**
-
-- After upgrading Dify to a newer version with a full `.env` file
-- When `.env.example` has been updated with new environment variables
-- When managing a large or heavily customized `.env` file copied from `.env.example`
-
-**Usage**
-
-```bash
-# Grant execution permission (first time only)
-chmod +x dify-env-sync.sh
-
-# Run the synchronization
-./dify-env-sync.sh
+```
+Chrome 扩展(sidePanel 聊天框 + SW + content script)
+   │ ws + http(127.0.0.1:39181,本机 token)
+   ▼
+Indify Bridge(Node 20+ TS,本机常驻)
+   │ POST /api/session.*        │ 工作区文件 generated/{taskId}/
+   ▼                            ▼
+DSH Web GUI(127.0.0.1:3080)  DSL 适配层 skills/dify-workflow-dsl/
+(Agent 会话 = Builder)        (SKILL.md + references + scripts + adapter)
+   │
+   ▼
+Dify 1.16.1(http://localhost)— 新建走 DSL 导入,修改走草稿 API 就地写回
 ```
 
-### Additional Information
+DSL 知识只存在于 `skills/dify-workflow-dsl/` 与 `adapter/dify-<ver>.json`;Agent 只处理 IR
+(中间表示,`DESIGN.md` §6)结构语义;渲染一律交给原生 Dify 画布。
 
-- **Continuous Improvement Phase**: We are actively seeking feedback from the community to refine and enhance the deployment process. As more users adopt this new method, we will continue to make improvements based on your experiences and suggestions.
-- **Support**: For detailed configuration options and environment variable settings, refer to the `.env.example` file and the Docker Compose configuration files in the `docker` directory.
+## 安装
 
-This README aims to guide you through the deployment process using the new Docker Compose setup. For any issues or further assistance, please refer to the official documentation or contact support.
+### 0. 前置
+- Windows 10/11,Node ≥ 20(Dify 栈本身在 Docker 里运行;本仓库已含其部署文件)
+
+### 1. Dify 栈(通常已运行)
+```powershell
+docker compose up -d          # 已在运行的跳过
+# 控制台 http://localhost(浏览器登录)
+```
+
+### 2. Indify Bridge
+```powershell
+pnpm --dir bridge install
+pnpm --dir bridge run start   # 监听 127.0.0.1:39181;首次运行生成 .indifyrc.yaml(token)
+# 自检:curl http://127.0.0.1:39181/v1/health  → 返回 dsh/dify 可达性
+```
+
+### 3. Chrome 扩展(unpacked)
+1. Chrome → `chrome://extensions` → 打开「开发者模式」
+2. 「加载已解压的扩展程序」→ 选择 `D:\difyIndify\extension`
+3. 打开 Dify 控制台 `http://localhost`,点扩展图标打开侧边栏
+4. 侧边栏粘贴 `.indifyrc.yaml` 里的 `token` 值 → 显示「Bridge 已连接」
+   (打包分发:`pwsh -File tools/package-extension.ps1` → `dist/indify-extension-<ver>.zip`)
+
+## 使用
+
+- **新建(U1)**:Dify 任意页面 → 扩展聊天框输入需求 → 结构预览卡片 → [确认] → 自动导入并跳转新应用画布
+- **修改(U2)**:打开某工作流画布页 → 聊天框说"把 XX 改成 YY" → 预览 → [确认] → 草稿就地写回 + 单次刷新,画布更新(无 YAML 往返)
+- **迭代(U3)**:完成后直接继续提要求,同一会话续聊;「新会话」按钮可重置
+
+## 升级(Dify 升版)
+
+只改两处(详见 `DESIGN.md` §11 与 `tools/upgrade-drill.mjs`):
+1. `skills/dify-workflow-dsl/references/dify-<新版本>/` 与 `SKILL.md` §0 版本指针
+2. `skills/dify-workflow-dsl/adapter/dify-<新版本>.json`
+
+回归:`node skills/dify-workflow-dsl/tests/round-trip.mjs`(diff 必须为空);
+全流程演练:`node tools/upgrade-drill.mjs`(模拟升版 6 项检查)。
+扩展与 Bridge 不含任何 Dify 版本硬编码(由演练脚本强制验证)。
+
+## 目录
+
+| 路径 | 说明 |
+|---|---|
+| `bridge/` | 伴生服务(HTTP/WS + DSH 会话驱动 + 任务状态机) |
+| `extension/` | Chrome 扩展 MV3(sidePanel + SW + content script;`mock-bridge.mjs` 为联调假 Bridge) |
+| `skills/dify-workflow-dsl/` | DSL 适配层(唯一懂 Dify 版本细节的地方) |
+| `tools/` | 联调/回归/演练脚本(probe-dsh、dify-console、drive-task、upgrade-drill、package-extension) |
+| `docs/m0-findings.md` | M0 全部实测证据(DSH /api 契约、控制台 API、DSL 结构) |
+| `generated/` | 运行时产物(gitignored) |

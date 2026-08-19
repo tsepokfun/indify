@@ -21,13 +21,15 @@ import type { BridgeConfig } from './config.js';
 const TURN_TIMEOUT_MS = 10 * 60_000;
 const SKILL_MD = 'D:\\difyIndify\\skills\\dify-workflow-dsl\\SKILL.md';
 const VALIDATE = 'D:\\difyIndify\\skills\\dify-workflow-dsl\\scripts\\validate.mjs';
+// 版本防波堤纪律:这里绝不出现任何 Dify 版本号 / DSL 版本号 / 版本化参考目录名。
+// 版本细节(参考目录、节点白名单、字段)由 SKILL.md 与 adapter 声明,Agent 按 SKILL.md 的指针查阅。
 
 function buildCreatePrompt(task: Task): string {
   return [
     `你是 Indify 的 Builder Agent(工作区 D:\\difyIndify,任务 ID ${task.taskId})。`,
     '',
     `【必读】开始前先读取并严格遵守 ${SKILL_MD};`,
-    '结构细节按需查阅 D:\\difyIndify\\skills\\dify-workflow-dsl\\references\\dify-1.16\\ 下的参考文档。',
+    '结构细节按需查阅 SKILL.md 中声明的「当前版本 references 目录」(SKILL.md 会指出该目录的确切路径)。',
     '',
     `【任务】mode=create。用户需求(原话):${task.spec}`,
     '',
@@ -53,7 +55,7 @@ function buildModifyPrompt(task: Task): string {
     '',
     `【任务】mode=modify。用户对当前打开的工作流提出修改要求(原话):${task.spec}`,
     `当前草稿 graph 已由 Bridge 写入 D:\\difyIndify\\generated\\${task.taskId}\\current-graph.json`,
-    '(它就是 DSL 的 workflow.graph:nodes/edges/viewport,节点 data 细节见 references/dify-1.16/node-catalog.md)。',
+    '(它就是 DSL 的 workflow.graph:nodes/edges/viewport,节点 data 细节见 SKILL.md 声明的当前版本 node-catalog)。',
     '',
     '【执行步骤】',
     `1) 读取 current-graph.json,理解现有结构;`,

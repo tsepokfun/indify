@@ -140,7 +140,7 @@ $env:MOCK_HITL=1; node extension/mock-bridge.mjs              # HITL 模式:停�
 | 位置 | 现状 | 说明/风险 |
 |---|---|---|
 | 草稿写回 vs 自动 sync | 已做「GET 最新 hash → 写回 → 单次刷新」 | R4:极端时序下仍可能 409,靠重试缓解;必要时 M4 暂停编辑器自动保存 |
-| 版本探测 | adapter 固定 1.16.1 | M4 做运行时探测(§5.1) |
+| 版本探测 | ✅ 已实现(M4) | content script 同源读 `/app-dsl-version` → SW 从 Bridge `/v1/adapters` 匹配 dslVersion 选 adapter,失败回退最高版本 |
 | 导入降级 | 无 | 剪贴板逃生舱(route B 失败时) |
 | modify 预览 | 用 graph.json 节点/边清单 | 不渲染坐标/连线细节,仅结构清单 |
 

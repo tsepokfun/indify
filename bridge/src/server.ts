@@ -179,6 +179,12 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     return;
   }
 
+  // ---- adapter 列表(版本探测用) ----
+  if (req.method === 'GET' && path === '/v1/adapters') {
+    json(res, 200, { items: listAdapters() });
+    return;
+  }
+
   // ---- 产物 ----
   const artifactMatch = /^\/v1\/artifacts\/([A-Za-z0-9_-]+)\/([A-Za-z0-9._-]+)$/.exec(path);
   if (req.method === 'GET' && artifactMatch) {

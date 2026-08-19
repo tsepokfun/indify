@@ -319,7 +319,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "indify:getDslVersion") {
+    // 版本探测(M4):同源读 /app-dsl-version,免登录
+    getDslVersion()
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+    return true;
+  }
+
   // indify:status / indify:task 等广播:忽略,不响应
 });
+
+/** 同源探测 Dify 的 DSL 版本(免登录端点)。 */
+async function getDslVersion() {
+  try {
+    const res = await fetch("/console/api/app-dsl-version", { credentials: "same-origin" });
+    const body = await res.json();
+    if (res.ok && body && typeof body.app_dsl_version === "string") {
+      return { ok: true, appDslVersion: body.app_dsl_version };
+    }
+    return { ok: false, error: "app-dsl-version 响应异常" };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
 
 reportContext();

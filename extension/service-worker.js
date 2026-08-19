@@ -16,7 +16,7 @@ const RECONNECT_MAX_MS = 30000;
 const HEARTBEAT_INTERVAL_MS = 20000; // 心跳发送间隔
 const STALE_THRESHOLD_MS = 60000; // 超过该时长未收到任何帧,判定连接僵死,强制重连
 const CONTEXT_REFRESH_INTERVAL_MS = 30000; // 周期 ping content script 刷新上下文
-const ADAPTER_VERSION = "1.16.1";
+// 版本防波堤纪律:这里不硬编码任何 Dify/DSL 版本;adapter 由运行时探测选择(见 getAdapter)。
 
 let bridgeState = {
   connected: false,
@@ -140,7 +140,22 @@ function extractBridgeError(res) {
   return "HTTP " + (res && res.status ? res.status : "?");
 }
 
-// ---------- adapter 缓存 ----------
+// ---------- adapter 缓存与版本探测(M4) ----------
+// 探测策略:content script 同源读 Dify 的 /console/api/app-dsl-version(免登录),
+// 得到 app_dsl_version(如 "0.7.0");再从 Bridge 的 /v1/adapters 列表里选
+// dslVersion 匹配的 adapter;匹配失败回退到列表第一项(最高版本,即当前部署主版本)。
+let adapterListCache = null; // [{version, difyVersion, dslVersion}]
+
+async function getAdapterList() {
+  if (adapterListCache) return adapterListCache;
+  const res = await bridgeFetch("GET", "/v1/adapters");
+  if (res.ok && res.data && Array.isArray(res.data.items)) {
+    adapterListCache = res.data.items;
+    return adapterListCache;
+  }
+  return [];
+}
+
 async function getAdapter() {
   if (adapterCache) return adapterCache;
   try {
@@ -152,11 +167,43 @@ async function getAdapter() {
   } catch (e) {
     /* 忽略 */
   }
-  const res = await bridgeFetch("GET", `/v1/adapter/${ADAPTER_VERSION}`);
+
+  // 运行时探测:content script 报告 DSL 版本 → 匹配 adapter;
+  // 探测失败回退到 adapter 列表第一项(最高版本,即当前部署主版本)。
+  let version = null;
+  try {
+    const dslVersion = await detectDslVersionFromDify();
+    const list = await getAdapterList();
+    if (list.length === 0) return null;
+    if (dslVersion) {
+      const hit = list.find((a) => a.dslVersion === dslVersion);
+      if (hit) version = hit.version;
+    }
+    if (!version) version = list[list.length - 1].version; // 列表按版本升序,取最高
+  } catch (e) {
+    /* 探测失败,走下方兜底 */
+  }
+  if (!version) return null;
+
+  const res = await bridgeFetch("GET", `/v1/adapter/${version}`);
   if (res.ok && res.data && typeof res.data === "object") {
     adapterCache = res.data;
     chrome.storage.local.set({ adapter: res.data }).catch(() => {});
     return adapterCache;
+  }
+  return null;
+}
+
+/** 让 content script 同源探测 Dify 的 app-dsl-version;失败返回 null。 */
+async function detectDslVersionFromDify() {
+  if (contextTabId == null) return null;
+  try {
+    const response = await chrome.tabs.sendMessage(contextTabId, { type: "indify:getDslVersion" });
+    if (response && response.ok && response.appDslVersion) {
+      return String(response.appDslVersion);
+    }
+  } catch (e) {
+    /* 忽略 */
   }
   return null;
 }
@@ -360,7 +407,7 @@ async function doInject(taskId) {
   }
 
   const adapter = await getAdapter();
-  if (!adapter) throw new Error("无法获取 adapter(请确认 Bridge 的 /v1/adapter/1.16.1 可用)");
+  if (!adapter) throw new Error("无法获取 adapter(请确认 Bridge 的 /v1/adapters 与 /v1/adapter/{version} 可用)");
 
   const yamlRes = await bridgeFetch("GET", `/v1/artifacts/${taskId}/workflow.yaml`);
   if (!yamlRes.ok) {

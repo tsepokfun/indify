@@ -101,7 +101,7 @@ function buildTemplate(): string {
     'dify:',
     `  consoleUrl: ${DEFAULTS.dify.consoleUrl}`,
     `  apiPrefix: ${DEFAULTS.dify.apiPrefix}`,
-    '  # fixedVersion: "1.16.1"   # 取消注释可固定 Dify 版本,跳过运行时探测',
+    '  # fixedVersion: ""   # 可固定 Dify 版本号(与 adapter 文件名中的版本一致),留空则运行时探测',
     '',
   ].join('\n');
 }

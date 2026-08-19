@@ -31,14 +31,18 @@ const PORT = Number(process.env.MOCK_BRIDGE_PORT || 39181);
 const HITL = process.env.MOCK_HITL === "1";
 const STEP_DELAY = 700;
 
-const ADAPTER_PATH = path.join(
-  __dirname,
-  "..",
-  "skills",
-  "dify-workflow-dsl",
-  "adapter",
-  "dify-1.16.1.json"
-);
+// 版本无关:adapter 目录里第一个 dify-*.json 即当前部署版本(与真 Bridge 的 /v1/adapter/{v} 同构)。
+const ADAPTER_DIR = path.join(__dirname, "..", "skills", "dify-workflow-dsl", "adapter");
+const ADAPTER_FILE = fs.readdirSync(ADAPTER_DIR).find((f) => /^dify-[\d.]+\.json$/.test(f)) || "";
+const ADAPTER_PATH = path.join(ADAPTER_DIR, ADAPTER_FILE);
+const ADAPTER_META = (() => {
+  try {
+    const a = JSON.parse(fs.readFileSync(ADAPTER_PATH, "utf8"));
+    return { difyVersion: a.difyVersion || "?", dslVersion: a.dslVersion || "?" };
+  } catch {
+    return { difyVersion: "?", dslVersion: "?" };
+  }
+})();
 
 const tasks = new Map();
 const wsClients = new Set();
@@ -110,7 +114,7 @@ function workflowYaml() {
     "  mode: workflow",
     "  name: 客服工单分类",
     "kind: app",
-    "version: 0.7.0",
+    `version: ${ADAPTER_META.dslVersion}`,
     "workflow:",
     "  graph:",
     "    nodes: []",
@@ -298,7 +302,8 @@ async function route(req, res) {
     return json(res, 200, { status: "ok", name: "indify-mock-bridge", version: "0.1.0-mock" });
   }
 
-  if (m === "GET" && p === "/v1/adapter/1.16.1") {
+  const adapterMatch = /^\/v1\/adapter\/([\d.]+)$/.exec(p);
+  if (m === "GET" && adapterMatch) {
     try {
       const raw = readFileSync(ADAPTER_PATH, "utf8");
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(raw) });
@@ -443,7 +448,7 @@ server.on("upgrade", (req, socket) => {
   socket.on("error", () => wsClients.delete(socket));
   sendJson(socket, {
     type: "bridge.status",
-    data: { bridge: "mock", difyVersion: "1.16.1", state: "connected", note: "indify mock bridge" },
+    data: { bridge: "mock", difyVersion: ADAPTER_META.difyVersion, state: "connected", note: "indify mock bridge" },
   });
 });
 
@@ -451,7 +456,7 @@ server.on("upgrade", (req, socket) => {
 setInterval(() => {
   broadcast({
     type: "bridge.status",
-    data: { bridge: "mock", difyVersion: "1.16.1", state: "connected", note: "indify mock bridge" },
+    data: { bridge: "mock", difyVersion: ADAPTER_META.difyVersion, state: "connected", note: "indify mock bridge" },
   });
 }, 15000);
 
