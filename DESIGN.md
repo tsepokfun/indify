@@ -1,6 +1,6 @@
 # Indify — Dify 工作流自然语言生成器 · 设计文档
 
-> 状态:规划稿 v0.1(本会话为纯规划阶段,尚未写代码)
+> 状态:M0 已验证(附录 A 1/2/3/4/5-API/7 闭环,证据与结论见 `docs/m0-findings.md`),M1–M4 待实现
 > 目标 Dify 版本:1.16.1(docker-compose 已钉死:`langgenius/dify-api:1.16.1` / `dify-web:1.16.1`)
 > 工作区:`D:\difyIndify`
 
@@ -259,6 +259,10 @@ D:\difyIndify\skills\dify-workflow-dsl\
 
 ### 8.1 新建(create)
 
+> M0 实测(见 `docs/m0-findings.md` §2):路线 B 的控制台导入 API **已实测可用**
+> (`POST /console/api/apps/imports`,body `{mode:"yaml-content", yaml_content}` → 200/202,旧版 DSL 自动迁移);
+> 附录A-7 结论:官方 CLI 导入在 1.16.1 不存在,C 方案 = 剪贴板逃生舱。实现时优先 B,失败降级剪贴板。
+
 1. Agent 产出 `workflow.yaml`(skill 的 ir_to_dsl)。
 2. 扩展 content script 二选一(adapter JSON 指定,含降级策略):
    - **A 原生导入**:模拟控制台"导入 DSL"文件选择框,塞入 YAML 的 `File` 对象——复用 Dify 自己的导入代码路径,最不易碎;
@@ -267,6 +271,10 @@ D:\difyIndify\skills\dify-workflow-dsl\
 4. 失败降级:把 YAML 放入剪贴板 + 引导用户手动导入(永远可用的逃生舱)。
 
 ### 8.2 修改(modify)
+
+> M0 实测(见 `docs/m0-findings.md` §2):草稿读写端点已实测
+> (`GET|POST /console/api/apps/{id}/workflows/draft`;POST body `{graph, features, hash?, environment_variables?, conversation_variables?}`,
+> hash 乐观锁;该路径在 CSRF 白名单中)。写回→读回一致性已闭环。
 
 1. content script 通过控制台 API 读当前草稿 graph(端点/头见 adapter JSON;同源 fetch 天然携带控制台 cookie)。
 2. graph JSON 随任务交给 Agent(§7.1 context)。
@@ -332,13 +340,21 @@ D:\difyIndify\
 
 ## 附录 A:未验证清单(实现期逐条闭环)
 
-1. [ ] DSH `/api`:session.create / session.prompt / session.history 的确切参数、返回结构、错误码。
-2. [ ] DSH `/api/events.mux` 帧格式与 `turn/end` 判定;非浏览器 loopback 客户端实测过信任墙。
-3. [ ] Dify 1.16.1 控制台:导入端点、草稿读写端点、CSRF 头、响应结构(从 dify-web 容器产物 grep)。
-4. [ ] Dify 1.16.1 DSL:导出官方示例,确认 app 级字段、graph 结构、节点 data 字段集(喂给 node-catalog)。
+1. [x] DSH `/api`:session.create / session.prompt / session.history 的确切参数、返回结构、错误码。
+   **M0 已验证**——线格式 `POST /api/<method>` + client-request/server-response 信封;三件套签名见 `docs/m0-findings.md` §1。
+2. [x] DSH `/api/events.mux` 帧格式与 `turn/end` 判定;非浏览器 loopback 客户端实测过信任墙。
+   **M0 已验证**——网络客户端仅 WS 升级(纯 GET 返回 426);帧为 server-request 信封,`session/event` + `event.type==="turn/end"` 判结束;loopback 无标记 200 / 伪造 Origin 403。
+3. [x] Dify 1.16.1 控制台:导入端点、草稿读写端点、CSRF 头、响应结构(从 dify-web 容器产物 grep)。
+   **M0 已验证**——oRPC 契约提取 778 条路由;`POST /apps/imports`(yaml-content/yaml-url,200/202)、`GET|POST /apps/{id}/workflows/draft`(hash 乐观锁、CSRF 白名单豁免)、`GET /apps/{id}/export`(`{data: YAML}`)全部实测通过;CSRF=`X-CSRF-Token` 头 == `csrf_token` cookie,覆盖所有非 OPTIONS 方法;登录密码为 base64 编码。详见 `docs/m0-findings.md` §2。
+4. [x] Dify 1.16.1 DSL:导出官方示例,确认 app 级字段、graph 结构、节点 data 字段集(喂给 node-catalog)。
+   **M0 已验证**——官方 echo 样例经运行中控制台导入(0.3.1)→导出(0.7.0),基准文件 `skills/dify-workflow-dsl/tests/fixtures/official-sample-1.16.1.yml`;节点类型全集(25 内置 + trigger 系列)取自 graphon 0.6.0 `BuiltinNodeTypes`。详见 `docs/m0-findings.md` §3。
 5. [ ] 草稿写回后页面刷新是否稳定呈现;自动 sync 竞争实测(R4)。
+   **M0 部分验证**——API 侧闭环:GET draft → 改标题 → POST draft(带 hash)→ GET 读回一致(实测通过)。
+   **浏览器刷新呈现与自动 sync 竞争留待 M2/M3 扩展注入时实测。**
 6. [ ] Chrome sidePanel 在用户主动点开场景下的可用性;ws 到 127.0.0.1 的扩展权限细节。
-7. [ ] 官方 CLI 导入是否可被 Bridge 直接调用(作为原生导入的 C 方案)。
+   **留待 M1 扩展构建后在 Chrome 实测(unpacked 加载)。**
+7. [x] 官方 CLI 导入是否可被 Bridge 直接调用(作为原生导入的 C 方案)。
+   **M0 已验证:不可用**——1.16.1 api 容器无 `dify` CLI、flask CLI 无 import 命令;C 方案定案为剪贴板逃生舱(见 `docs/m0-findings.md` §4)。
 
 ## 附录 B:术语表
 
