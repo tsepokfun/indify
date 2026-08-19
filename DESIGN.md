@@ -1,6 +1,6 @@
 # Indify — Dify 工作流自然语言生成器 · 设计文档
 
-> 状态:M0–M1 已完成(附录 A 1/2/3/4/5-API/7 闭环见 `docs/m0-findings.md`;skill 底座 round-trip diff=∅、Bridge `/v1/health` 通、扩展骨架可加载),M2–M4 待实现
+> 状态:M0–M2 已完成(附录 A 1/2/3/4/5-API/7 闭环见 `docs/m0-findings.md`;skill round-trip diff=∅;Bridge 任务链路 + U1 无浏览器链路实测跑通;扩展 U1 链路已交付待浏览器 walkthrough),M3–M4 待实现
 > 目标 Dify 版本:1.16.1(docker-compose 已钉死:`langgenius/dify-api:1.16.1` / `dify-web:1.16.1`)
 > 工作区:`D:\difyIndify`
 
@@ -322,7 +322,7 @@ D:\difyIndify\
 |---|---|---|
 | M0 验证 | 对着运行中的 DSH(127.0.0.1:3080)实测 `/api` 会话三件套;从 dify-web 容器抠 1.16.1 控制台 API 端点/CSRF;导出官方示例 DSL | ✅ 附录 A 清单闭环(2026-08-19,`docs/m0-findings.md`) |
 | M1 底座 | skill v1(SKILL.md + 1.16 参考 + 三脚本)+ round-trip 通过;Bridge 最小版;扩展骨架(panel/SW/content script 空壳) | ✅ round-trip diff=∅(2026-08-19);`GET /v1/health` 通;扩展骨架可 unpacked 加载(附录A-6 待浏览器实测) |
-| M2 新建链路 | U1 全流程:聊天 → IR 预览 → 确认 → YAML → 原生导入 → 画布 | 端到端 ≤ 一次刷新 |
+| M2 新建链路 | U1 全流程:聊天 → IR 预览 → 确认 → YAML → 原生导入 → 画布 | ✅ 无浏览器链路实测跑通(2026-08-19:queued→agent-running→draft-ready→finalizing→ready→injected→done;approve 与 revise 双路径;生成物 round-trip diff=∅);浏览器侧 U1 演示待用户 walkthrough |
 | M3 修改链路 | U2 全流程:草稿读 → Agent 改 → 写回 → 画布就地更新;U3 迭代续聊 | 就地更新无 YAML 往返 |
 | M4 版本化完善 | adapter JSON 完整、版本探测、升级演练(11 节流程走一遍)、打包与自托管安装说明 | 模拟 Dify 升版只改 skill/adapter |
 
