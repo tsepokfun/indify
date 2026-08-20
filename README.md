@@ -28,7 +28,8 @@ DSL 知识只存在于 `skills/dify-workflow-dsl/` 与 `adapter/dify-<ver>.json`
 ## 安装
 
 ### 0. 前置
-- Windows 10/11,Node ≥ 20(Dify 栈本身在 Docker 里运行;本仓库已含其部署文件)
+- **Windows 10/11** 或 **macOS**(Linux 同理):Node ≥ 20 + Docker(Dify 栈在 Docker 里跑)
+- 本仓库所有组件跨平台:Bridge/skill/工具均为纯 Node;扩展是标准 Chrome MV3;仅 `tools/package-extension.ps1` 是 Windows 打包脚本,macOS 用 `cd extension && zip -r ../dist/indify-extension.zip manifest.json sidepanel.* service-worker.js content-script.js README.md` 等价替代
 
 ### 1. Dify 栈(通常已运行)
 ```powershell

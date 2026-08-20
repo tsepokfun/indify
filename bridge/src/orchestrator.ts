@@ -11,6 +11,7 @@
  *     Prompt#2(revise):按反馈改 → 回到 draft-ready
  *
  * Bridge 只读 Agent 产物,只写 task.json 与 current-graph.json(见 DESIGN §9)。
+ * 跨平台:所有提示词路径由 workspaceRoot 动态生成(Windows 反斜杠 / POSIX 斜杠)。
  */
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,14 +20,32 @@ import { TaskStore, type Task } from './tasks.js';
 import type { BridgeConfig } from './config.js';
 
 const TURN_TIMEOUT_MS = 10 * 60_000;
-const SKILL_MD = 'D:\\difyIndify\\skills\\dify-workflow-dsl\\SKILL.md';
-const VALIDATE = 'D:\\difyIndify\\skills\\dify-workflow-dsl\\scripts\\validate.mjs';
 // 版本防波堤纪律:这里绝不出现任何 Dify 版本号 / DSL 版本号 / 版本化参考目录名。
 // 版本细节(参考目录、节点白名单、字段)由 SKILL.md 与 adapter 声明,Agent 按 SKILL.md 的指针查阅。
 
+let SKILL_MD = '';
+let VALIDATE = '';
+let IR_TO_DSL = '';
+let GEN_ROOT = '';
+let WORKSPACE = '';
+
+/** 由 server.ts 启动时调用,把工作区根注入提示词路径(跨平台)。 */
+export function initPromptPaths(workspaceRoot: string): void {
+  WORKSPACE = workspaceRoot;
+  SKILL_MD = join(workspaceRoot, 'skills', 'dify-workflow-dsl', 'SKILL.md');
+  VALIDATE = join(workspaceRoot, 'skills', 'dify-workflow-dsl', 'scripts', 'validate.mjs');
+  IR_TO_DSL = join(workspaceRoot, 'skills', 'dify-workflow-dsl', 'scripts', 'ir_to_dsl.mjs');
+  GEN_ROOT = join(workspaceRoot, 'generated');
+}
+
+function taskDir(task: Task): string {
+  return join(GEN_ROOT, task.taskId);
+}
+
 function buildCreatePrompt(task: Task): string {
+  const dir = taskDir(task);
   return [
-    `你是 Indify 的 Builder Agent(工作区 D:\\difyIndify,任务 ID ${task.taskId})。`,
+    `你是 Indify 的 Builder Agent(工作区 ${WORKSPACE},任务 ID ${task.taskId})。`,
     '',
     `【必读】开始前先读取并严格遵守 ${SKILL_MD};`,
     '结构细节按需查阅 SKILL.md 中声明的「当前版本 references 目录」(SKILL.md 会指出该目录的确切路径)。',
@@ -35,12 +54,12 @@ function buildCreatePrompt(task: Task): string {
     '',
     '【执行步骤】',
     `1) 设计工作流 IR(只处理结构语义:节点/连边/变量绑定;不要手写 YAML);`,
-    `2) 将 IR 写入 D:\\difyIndify\\generated\\${task.taskId}\\ir.json;`,
-    `3) 用 node ${VALIDATE} D:\\difyIndify\\generated\\${task.taskId}\\ir.json 校验,不通过则修正;`,
-    `4) 写 D:\\difyIndify\\generated\\${task.taskId}\\result.json,内容恰为 {"status":"draft-ready","summary":"<一句中文,描述你将生成的工作流结构>","warnings":[]}。`,
+    `2) 将 IR 写入 ${join(dir, 'ir.json')};`,
+    `3) 用 node ${VALIDATE} ${join(dir, 'ir.json')} 校验,不通过则修正;`,
+    `4) 写 ${join(dir, 'result.json')},内容恰为 {"status":"draft-ready","summary":"<一句中文,描述你将生成的工作流结构>","warnings":[]}。`,
     '',
     '【纪律】',
-    `- 只写 D:\\difyIndify\\generated\\${task.taskId}\\ 目录,不要动其他文件;`,
+    `- 只写 ${dir} 目录,不要动其他文件;`,
     '- 不要调用提问/审批类工具(ask_user_question 等),信息不足时做合理假设并写入 warnings;',
     '- 不要自己拼接 DSL YAML 字段名或 {{#...#}} 引用语法,转换一律交给 skill 脚本;',
     '- 最终只回复一句简短中文说明(用户将在扩展里看到你的摘要)。',
@@ -48,24 +67,25 @@ function buildCreatePrompt(task: Task): string {
 }
 
 function buildModifyPrompt(task: Task): string {
+  const dir = taskDir(task);
   return [
-    `你是 Indify 的 Builder Agent(工作区 D:\\difyIndify,任务 ID ${task.taskId})。`,
+    `你是 Indify 的 Builder Agent(工作区 ${WORKSPACE},任务 ID ${task.taskId})。`,
     '',
     `【必读】开始前先读取并严格遵守 ${SKILL_MD},尤其「2.1 修改(modify)流程」一节。`,
     '',
     `【任务】mode=modify。用户对当前打开的工作流提出修改要求(原话):${task.spec}`,
-    `当前草稿 graph 已由 Bridge 写入 D:\\difyIndify\\generated\\${task.taskId}\\current-graph.json`,
+    `当前草稿 graph 已由 Bridge 写入 ${join(dir, 'current-graph.json')}`,
     '(它就是 DSL 的 workflow.graph:nodes/edges/viewport,节点 data 细节见 SKILL.md 声明的当前版本 node-catalog)。',
     '',
     '【执行步骤】',
     `1) 读取 current-graph.json,理解现有结构;`,
     `2) 直接修改 graph(保真纪律见 SKILL.md §2.1):新增/删除节点与边、修改节点 data 或连线;`,
-    `3) 把新 graph 写入 D:\\difyIndify\\generated\\${task.taskId}\\graph.json;`,
-    `4) 用 node ${VALIDATE} D:\\difyIndify\\generated\\${task.taskId}\\graph.json --graph 校验,不通过则修正;`,
-    `5) 写 D:\\difyIndify\\generated\\${task.taskId}\\result.json,内容恰为 {"status":"draft-ready","summary":"<一句中文,说明本次改动>","warnings":[]}。`,
+    `3) 把新 graph 写入 ${join(dir, 'graph.json')};`,
+    `4) 用 node ${VALIDATE} ${join(dir, 'graph.json')} --graph 校验,不通过则修正;`,
+    `5) 写 ${join(dir, 'result.json')},内容恰为 {"status":"draft-ready","summary":"<一句中文,说明本次改动>","warnings":[]}。`,
     '',
     '【纪律】',
-    `- 只写 D:\\difyIndify\\generated\\${task.taskId}\\ 目录,不要动其他文件;`,
+    `- 只写 ${dir} 目录,不要动其他文件;`,
     '- 保真优先:未触及节点的 data/canvas、边的 data/zIndex、viewport 一律原样保留;',
     '- 不要调用提问/审批类工具;信息不足时做合理假设并写入 warnings;',
     '- 不要把 graph 转成 YAML 导入(那只会新建应用),修改只走草稿写回;',
@@ -74,30 +94,32 @@ function buildModifyPrompt(task: Task): string {
 }
 
 function buildApprovePrompt(task: Task): string {
+  const dir = taskDir(task);
   if (task.mode === 'modify') {
     return [
       `Indify 任务 ${task.taskId}:用户已【确认】修改方案。现在:`,
-      `1) 再跑一次 node ${VALIDATE} D:\\difyIndify\\generated\\${task.taskId}\\graph.json --graph,确认有效;`,
-      `2) 更新 D:\\difyIndify\\generated\\${task.taskId}\\result.json 为 {"status":"ready","summary":"<一句中文>","warnings":[]}。`,
+      `1) 再跑一次 node ${VALIDATE} ${join(dir, 'graph.json')} --graph,确认有效;`,
+      `2) 更新 ${join(dir, 'result.json')} 为 {"status":"ready","summary":"<一句中文>","warnings":[]}。`,
       '回复一句简短中文。',
     ].join('\n');
   }
   return [
     `Indify 任务 ${task.taskId}:用户已【确认】预览结构。现在:`,
     `1) 用 skill 脚本把 IR 转成 DSL YAML:` +
-      `node D:\\difyIndify\\skills\\dify-workflow-dsl\\scripts\\ir_to_dsl.mjs D:\\difyIndify\\generated\\${task.taskId}\\ir.json D:\\difyIndify\\generated\\${task.taskId}\\workflow.yaml`,
+      `node ${IR_TO_DSL} ${join(dir, 'ir.json')} ${join(dir, 'workflow.yaml')}`,
     `2) 再用 validate.mjs 校验生成的 workflow.yaml;`,
-    `3) 更新 D:\\difyIndify\\generated\\${task.taskId}\\result.json 为 {"status":"ready","summary":"<一句中文>","warnings":[]}。`,
+    `3) 更新 ${join(dir, 'result.json')} 为 {"status":"ready","summary":"<一句中文>","warnings":[]}。`,
     '回复一句简短中文。',
   ].join('\n');
 }
 
 function buildRevisePrompt(task: Task, feedback: string): string {
+  const dir = taskDir(task);
   const file = task.mode === 'modify' ? 'graph.json' : 'ir.json';
   const extra = task.mode === 'modify' ? '(裸 graph 对象,校验用 --graph)' : '';
   return [
     `Indify 任务 ${task.taskId}:用户对预览结构提出修改意见:「${feedback}」。`,
-    `请修改 D:\\difyIndify\\generated\\${task.taskId}\\${file}(沿用 skill 规则与语义约束),重新校验${extra},`,
+    `请修改 ${join(dir, file)}(沿用 skill 规则与语义约束),重新校验${extra},`,
     `并更新 result.json(保持 {"status":"draft-ready",...} 与新的 summary)。回复一句简短中文。`,
   ].join('\n');
 }
@@ -109,7 +131,9 @@ export class Orchestrator {
     private readonly dsh: DshClient,
     private readonly store: TaskStore,
     private readonly cfg: BridgeConfig,
-  ) {}
+  ) {
+    initPromptPaths(cfg.workspaceRoot);
+  }
 
   /** 非阻塞踢动:若有排队任务且当前空闲,开始跑下一个。 */
   kick(): void {
