@@ -44,8 +44,12 @@
 - 一次性安装脚本 `tools/setup-ocr.ps1`(pip 装到专用 venv;注意核对 Python 3.13 的 onnxruntime 轮子可用性,
   不可用则脚本内用 `uv` 建 3.12 venv);macOS 提供等价 `tools/setup-ocr.sh`。
 - **运行链路**:Bridge 检测 PDF 无文字层 / 收到图片 → 调本地 `python -m ocr`(venv)识别 → 写 `.ocr.txt`。
-- **多模态兜底**(双保险,也补 OCR 漏信息):扫描 PDF 的页图与图片附件同时进 DSH 原生图片摄入,
-  由 Builder Agent 视觉复核;OCR 不可用(未装/失败)时该通道自动成为主通道,不阻塞任务。
+- **多模态兜底(用户拍板:只用 DSH 环境,零外部 API/key)**:扫描 PDF 的页图与图片附件走
+  **DSH 自带会话模型**的视觉能力(当前 deepseek-v4-pro,与本会话同款)。两条注入路径均为 DSH 原生:
+  ① `session.prompt` content 的 image 部件(base64,5MB/张、20 张/消息,M0 已实测通道存在);
+  ② 图片落盘 attachments 后由 Agent 用自己的 `read_image` 工具读取。不引入任何第三方视觉 API。
+  **实施首日必须实测**:用一张测试图验证 Builder 会话模型确实能"看到"它
+  (若 DSH 换成纯文本模型则自动降级为仅 OCR 文本,并回报用户)。
 - **全部失败才降级**:提示用户「无法识别,请文字描述」——仅此一档,不再是最常见路径。
 
 ### 协议与实现变更
