@@ -1,7 +1,7 @@
 # Indify — Dify 工作流自然语言生成器 · 设计文档
 
-> 状态:**已实现**(2026-08-19,全量 M0–M4 完成)。round-trip diff=∅;U1/U2/U3 无浏览器链路全部实测跑通;
-> §11 模拟升版演练 6/6 通过(扩展与 Bridge 零版本硬编码);唯一待办 = 用户在浏览器实测扩展 walkthrough(附录 A-6)。
+> 状态:**已实现**(2026-08-20,全量 M0–M4 完成,附录 A 七条全部闭环)。round-trip diff=∅;U1/U2/U3
+> 无浏览器链路 + 用户浏览器 walkthrough 实测通过;§11 模拟升版演练 6/6(扩展与 Bridge 零版本硬编码)。
 > 目标 Dify 版本:1.16.1(docker-compose 已钉死:`langgenius/dify-api:1.16.1` / `dify-web:1.16.1`)
 > 工作区:`D:\difyIndify`
 
@@ -349,13 +349,16 @@ D:\difyIndify\
    **M0 已验证**——oRPC 契约提取 778 条路由;`POST /apps/imports`(yaml-content/yaml-url,200/202)、`GET|POST /apps/{id}/workflows/draft`(hash 乐观锁、CSRF 白名单豁免)、`GET /apps/{id}/export`(`{data: YAML}`)全部实测通过;CSRF=`X-CSRF-Token` 头 == `csrf_token` cookie,覆盖所有非 OPTIONS 方法;登录密码为 base64 编码。详见 `docs/m0-findings.md` §2。
 4. [x] Dify 1.16.1 DSL:导出官方示例,确认 app 级字段、graph 结构、节点 data 字段集(喂给 node-catalog)。
    **M0 已验证**——官方 echo 样例经运行中控制台导入(0.3.1)→导出(0.7.0),基准文件 `skills/dify-workflow-dsl/tests/fixtures/official-sample-1.16.1.yml`;节点类型全集(25 内置 + trigger 系列)取自 graphon 0.6.0 `BuiltinNodeTypes`。详见 `docs/m0-findings.md` §3。
-5. [ ] 草稿写回后页面刷新是否稳定呈现;自动 sync 竞争实测(R4)。
-   **M0 部分验证**——API 侧闭环:GET draft → 改标题 → POST draft(带 hash)→ GET 读回一致(实测通过)。
-   **浏览器刷新呈现与自动 sync 竞争留待 M2/M3 扩展注入时实测。**
-6. [ ] Chrome sidePanel 在用户主动点开场景下的可用性;ws 到 127.0.0.1 的扩展权限细节。
-   **留待 M1 扩展构建后在 Chrome 实测(unpacked 加载)。**
+5. [x] 草稿写回后页面刷新是否稳定呈现;自动 sync 竞争实测(R4)。
+   **M0 部分验证 + M3 实测**——API 侧闭环:GET draft → 改标题 → POST draft(带 hash)→ GET 读回一致;
+   M3 无浏览器链路实测 echo 应用 2→3 节点就地更新;**2026-08-20 用户浏览器 walkthrough 确认**:
+   写回 → 单次刷新画布呈现稳定;未观察到自动 sync 覆盖(「GET 最新 hash → 写回 → 单次刷新」策略有效)。
+6. [x] Chrome sidePanel 在用户主动点开场景下的可用性;ws 到 127.0.0.1 的扩展权限细节。
+   **2026-08-20 用户浏览器实测通过**——unpacked 加载成功;点扩展图标打开 sidePanel 正常;
+   content script 正确注入并识别 appId/画布页上下文;粘贴 token 后 ws 连接 Bridge 成功;
+   MV3 下 ws://127.0.0.1 无需额外权限(与设计一致)。
 7. [x] 官方 CLI 导入是否可被 Bridge 直接调用(作为原生导入的 C 方案)。
-   **M0 已验证:不可用**——1.16.1 api 容器无 `dify` CLI、flask CLI 无 import 命令;C 方案定案为剪贴板逃生舱(见 `docs/m0-findings.md` §4)。
+   **M0 已验证:不可用**——1.16.1 api 容器无 `dify` CLI、flask CLI 无 import 命令;C 方案定案为剪贴板逃生舱(见 `docs/m0-findings.md` §4),已实现于扩展(route B 失败时一键复制 YAML 手动导入)。
 
 ## 附录 B:术语表
 
