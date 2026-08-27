@@ -1,18 +1,18 @@
-# Indify Chrome 扩展(M3:新建 U1 + 就地修改 U2 + 续聊 U3)
+# Indify Chrome 扩展(v2:两段式确认 + Agent 实时输出流 + 附件)
 
 > Indify = Chrome 扩展聊天框 + 本地伴生服务(Indify Bridge)+ DSL 适配层,让用户用自然语言生成/修改 Dify 1.16.1 工作流(Dify 控制台在 `http://localhost`)。
 >
-> 本目录当前为 **M3**:聊天框输入 → 任务提交(create/modify)→ Agent 生成 → 结构预览卡片 → HITL 确认/修改 → 终稿生成 → 注入(新建导入 / 就地写回草稿 + 单次刷新)。**不含** React、构建链;纯 JS。
+> 本目录当前为 **v2**:聊天框输入(可带附件)→ 两段式确认(可编辑计划 → 结构预览)→ Agent 实时输出流 → 注入(新建导入 / 就地写回草稿 + 单次刷新)。**不含** React、构建链;纯 JS。
 
 ## 1. 目录结构
 
 ```
 extension/
-├─ manifest.json       # MV3:name "Indify",version "0.1.0";权限最小集
+├─ manifest.json       # MV3:name "Indify",version "0.2.0";权限最小集
 ├─ README.md           # 本文档
-├─ sidepanel.html      # 聊天框 UI:状态条 + 模式提示 + 输入框 + 消息区 + 任务卡片
-├─ sidepanel.js        # 消息气泡 / 任务状态 / 预览卡片 / HITL / 续聊;纯 JS 无依赖
-├─ service-worker.js   # ws 连接 + bridgeFetch + 任务路由 + 按 mode 的注入编排 + sessionId 透传
+├─ sidepanel.html      # 聊天框 UI:状态条 + 模式提示 + 附件 chip + 输入框 + 消息区 + 任务卡片
+├─ sidepanel.js        # 消息气泡 / 计划文本框 / 预览卡片 / 流式输出 / 附件 chip / HITL;纯 JS 无依赖
+├─ service-worker.js   # ws 连接 + bridgeFetch + 任务路由 + 附件透传/补传 + 按 mode 的注入编排 + sessionId 透传
 ├─ content-script.js   # 上下文检测 + DSL 导入(create)+ 草稿读/写(modify)
 └─ mock-bridge.mjs     # 本地联调用假 Bridge(纯 Node,无依赖)
 ```
@@ -56,6 +56,16 @@ extension/
 - 同一应用连续多次修改时,SW 透传上次任务的 `sessionId`,Agent 记得上下文。
 - 点「新会话」清空 `lastSessionId`,下次提交不复用旧会话。
 
+### 附件(F1)
+
+- 输入框左侧「📎」多选文件 → chip 显示在输入框上方(名称/大小/×移除),随需求一起提交。
+- 支持:PDF(≤20MB)、图片 png/jpg/jpeg/webp/gif(≤5MB/个、≤20 张/任务)、文本 txt/md/csv/json/yaml/yml(≤5MB);
+  其它(音视频/docx/xlsx/zip)前端与 Bridge 双重拒绝并给出提示。
+- 处理(Bridge):文字版 PDF 抽文本、扫描版 PDF 渲染页图走 RapidOCR、图片走 RapidOCR(标注「OCR 文本,可能有误」)、
+  文本类原样落盘;OCR 在任务排队期间后台跑,完成后经「Agent 输出」区提示「附件识别完成」。
+- 计划阶段可点「📎 补传附件」继续追加(plan-ready 时可用),下一轮计划修订/构建时 Agent 会读取。
+- 用途由 Agent 决定:作为生成参考,或让生成的工作流包含文件处理环节——取舍写在计划里供你审阅。
+
 ## 4. 消息协议(最终)
 
 `context` 结构:`{ appId?, appName?, mode?, page:"workflow"|"apps"|"other", url }`。
@@ -70,8 +80,10 @@ extension/
 | SW → panel(广播) | `{ type:"indify:status", bridge:{connected,url}, context, lastSessionId }` | 连接/上下文/会话状态 |
 | SW → panel(广播) | `{ type:"indify:task", task }` | 任务状态(submitAck 或 task.frame 转译) |
 | panel → SW | `{ type:"indify:getStatus" }` | 拉当前状态 → `{bridge, context, task, lastSessionId}` |
-| panel → SW | `{ type:"indify:submitTask", mode:"create"\|"modify", spec }` | 提交任务 → `{ok, taskId, status}`(modify 失败返回 `needDify:true`) |
+| panel → SW | `{ type:"indify:submitTask", mode:"create"\|"modify", spec, attachments? }` | 提交任务 → `{ok, taskId, status}`(modify 失败返回 `needDify:true`;attachments=[{name,mimeType,size,dataBase64}]) |
 | panel → SW | `{ type:"indify:decision", taskId, action:"build"\|"revise-plan"\|"approve"\|"revise", planText?, feedback? }` | HITL 决策 → `{ok}`(build 带 planText=用户最终计划;revise-plan 带 feedback=计划全文+补充) |
+| panel → SW | `{ type:"indify:addAttachments", taskId, attachments }` | 计划阶段补传附件 → `{ok}` |
+| SW → panel(广播) | `{ type:"indify:stream", data:{taskId, delta?, kind?, tool?, note?} }` | Agent 实时输出流(F3)+ 附件识别通知 |
 | panel → SW | `{ type:"indify:getArtifact", taskId, file }` | 拉产物 → `{ok, text}` |
 | panel → SW | `{ type:"indify:getAdapter" }` | 拉 adapter(缓存)→ `{ok, adapter}` |
 | panel → SW | `{ type:"indify:retryInject", taskId }` | 注入失败/无 Dify 页后重试 → `{ok}` |
@@ -89,13 +101,14 @@ extension/
 
 | 接口 | 说明 |
 |---|---|
-| `POST /v1/tasks` `{mode, spec, sessionId?, context?}` | → `201 {taskId, status:"queued"}`;modify 的 `context={appId, appUrl, currentGraph}` |
+| `POST /v1/tasks` `{mode, spec, sessionId?, context?, attachments?}` | → `201 {taskId, status:"queued"}`;modify 的 `context={appId, appUrl, currentGraph}`;attachments=[{name,mimeType,size,dataBase64}](Bridge 权威校验,拒绝 → 400 attachment-rejected) |
 | `GET /v1/tasks/{taskId}` | 任务详情 |
 | `POST /v1/tasks/{taskId}/decision` `{action, planText?, feedback?}` | `action:"build"`(plan-ready,planText=用户最终计划,唯一权威)/ `"revise-plan"`(plan-ready,feedback=计划全文+补充)/ `"approve"` / `"revise"`(draft-ready,feedback)→ `202 {accepted:true}` |
+| `POST /v1/tasks/{taskId}/attachments` `{attachments}` | 计划阶段(plan-ready)补传附件 → `202 {accepted, added[]}` |
 | `POST /v1/tasks/{taskId}/injected` `{appId?, appUrl?}` | → `202 {accepted:true}` |
 | `GET /v1/artifacts/{taskId}/{file}` | 原始文件体(ir.json / result.json / workflow.yaml / graph.json / plan.txt / plan-final.txt) |
 | `GET /v1/adapter/1.16.1` | adapter JSON |
-| `WS /v1/events?token=…` | `bridge.status`、`task.frame`、`task.stream`(F3 Agent 实时输出)帧 |
+| `WS /v1/events?token=…` | `bridge.status`、`task.frame`、`task.stream`(F3 Agent 实时输出 + F1 附件识别通知)帧 |
 
 任务状态机(v2 两段式):
 `queued → planning → plan-ready ⇄(revise-plan)→ building → draft-ready(HITL)→ finalizing → ready → injecting → done | failed`。

@@ -538,6 +538,15 @@ async function submitTask(message) {
 
   const body = { mode, spec };
   if (lastSessionId) body.sessionId = lastSessionId; // U3 会话透传
+  // F1:附件随任务提交(Bridge 侧权威校验白名单/大小/张数)
+  if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+    body.attachments = message.attachments.map((a) => ({
+      name: a.name,
+      mimeType: a.mimeType || "",
+      size: typeof a.size === "number" ? a.size : undefined,
+      dataBase64: a.dataBase64 || "",
+    }));
+  }
 
   if (mode === "modify") {
     // 刷新上下文拿最新 appId(避免用户已切换页面)
@@ -599,6 +608,24 @@ async function sendDecision(message) {
   if (feedback !== undefined) body.feedback = feedback;
   if (planText !== undefined) body.planText = planText; // build:用户最终计划文本(唯一权威)
   const res = await bridgeFetch("POST", `/v1/tasks/${taskId}/decision`, body);
+  if (!res.ok) return { ok: false, error: extractBridgeError(res) };
+  return { ok: true };
+}
+
+// F1:计划修订阶段补传附件(同一任务目录追加)
+async function addAttachments(message) {
+  const { taskId, attachments } = message;
+  if (!taskId || !Array.isArray(attachments) || attachments.length === 0) {
+    return { ok: false, error: "缺少 taskId 或 attachments" };
+  }
+  const res = await bridgeFetch("POST", `/v1/tasks/${taskId}/attachments`, {
+    attachments: attachments.map((a) => ({
+      name: a.name,
+      mimeType: a.mimeType || "",
+      size: typeof a.size === "number" ? a.size : undefined,
+      dataBase64: a.dataBase64 || "",
+    })),
+  });
   if (!res.ok) return { ok: false, error: extractBridgeError(res) };
   return { ok: true };
 }
@@ -675,6 +702,9 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 
     case "indify:decision":
       return sendDecision(message);
+
+    case "indify:addAttachments":
+      return addAttachments(message);
 
     case "indify:getArtifact":
       return getArtifact(message);

@@ -9,8 +9,8 @@
 | 特性 | 状态 | 说明 |
 |---|---|---|
 | F2 两段式确认 | ✅ 已实现(707b8b4) | 状态机 planning/plan-ready/building + decision build/revise-plan + 可编辑计划文本框;无浏览器回归:双回路(revise-plan 修订生效、plan-edit 手改落盘 plan-final.txt 为唯一权威)、守卫 4×409 负向、生成物 round-trip diff=∅;浏览器端待最终全流程实测 |
-| F3 Agent 实时输出流 | ⏳ 实现中 | 紧随 F2 |
-| F1 附件 + OCR | 未开始 | **多模态实测结论(2026-08-27)**:DSH 环境内 deepseek-v4-pro 与 deepseek-v4-flash 均不吃图(prompt 准入层拒绝 image 部件,`MODEL_DOES_NOT_SUPPORT_IMAGES`)。用户已拍板:**接受仅 OCR 文本**——图片/扫描版 PDF 只走 RapidOCR 文本通道,面板标注「OCR 文本,可能有误」;两条多模态路径(① prompt image 部件 ② Agent read_image)按实测移除。 |
+| F3 Agent 实时输出流 | ✅ 已实现(4d6c6c9) | Bridge mux 帧过滤(text-delta/reasoning-delta/tool 提示)→ task.stream 广播,active 任务↔session 映射防串台;面板「Agent 输出」区逐字渲染/自动滚底/60s 无输出提示/turn 结束清流;无浏览器回归:--stream 实测规划与构建两阶段逐字流;浏览器端待最终全流程实测 |
+| F1 附件 + OCR | ⏳ 实现中 | **多模态实测结论(2026-08-27)**:DSH 环境内 deepseek-v4-pro 与 deepseek-v4-flash 均不吃图(prompt 准入层拒绝 image 部件,`MODEL_DOES_NOT_SUPPORT_IMAGES`)。用户已拍板:**接受仅 OCR 文本**——图片/扫描版 PDF 只走 RapidOCR 文本通道,面板标注「OCR 文本,可能有误」;两条多模态路径(① prompt image 部件 ② Agent read_image)按实测移除。 |
 
 **遗留决策拍板记录(2026-08-27)**:OCR 自动安装=允许;附件上限=沿用默认;模型不吃图=接受仅 OCR 文本(先暂停汇报后用户拍板);扩展版本=0.2.0;实测节奏=全部完成后一次性浏览器全流程实测;旧任务=不迁移。
 
@@ -43,36 +43,38 @@
 | 类别 | 扩展名 | 上限 | 处理方式 |
 |---|---|---|---|
 | PDF(有文字层) | .pdf | ≤ 20MB/个 | Bridge 用 pdfjs 抽文本 → 存 `attachments/<名>.txt` |
-| PDF(扫描版,无文字层) | .pdf | ≤ 20MB/个 | pdfjs 渲染每页为 PNG → **RapidOCR 逐页识别** → `attachments/<名>.ocr.txt`;页图同时作为多模态兜底 |
-| 图片 | .png .jpg .jpeg .webp .gif | ≤ 5MB/个、≤ 20 张/任务 | ① 走 **DSH 原生图片摄入**(多模态直接看图,含图中信息);② 同步 **RapidOCR 提字** → `<名>.ocr.txt`,双份上下文 |
+| PDF(扫描版,无文字层) | .pdf | ≤ 20MB/个 | pdfjs 渲染每页为 PNG(≤30 页)→ **RapidOCR 逐页识别** → `attachments/<名>.ocr.txt`;页图保留供人工查看 |
+| 图片 | .png .jpg .jpeg .webp .gif | ≤ 5MB/个、≤ 20 张/任务 | **RapidOCR 提字** → `<名>.ocr.txt`(面板标注「OCR 文本,可能有误」);原图保留 |
 | 文本类 | .txt .md .csv .json .yaml .yml | ≤ 5MB/个 | 原样落盘 `attachments/`,prompt 引用路径,Agent 自行读取 |
 | 其它(docx/xlsx/zip…) | —— | 拒绝 | 提示「暂不支持,请转为 PDF 或文本」 |
 | 音视频 | 一切 | 拒绝 | 明确提示不支持 |
 
+> **2026-08-27 实测修正(用户已拍板)**:原计划的多模态兜底(① `session.prompt` image 部件
+> ② Agent `read_image`)经实施首日实测**不可用**——DSH 环境内 deepseek-v4-pro 与
+> deepseek-v4-flash 均在 prompt 准入层拒绝 image 部件(`MODEL_DOES_NOT_SUPPORT_IMAGES`)。
+> 最终定案:**仅 OCR 文本通道**;OCR 未安装/失败时任务不阻塞,面板经 `task.stream` 提示
+> 「OCR 环境未安装/识别失败,原文件保留供人工查看」。
+
 ### OCR 引擎选型(用户拍板:用好的 OCR)
 - **主引擎:RapidOCR**(`rapidocr-onnxruntime`,本地 Python + ONNX Runtime,CPU 可跑,中英混排识别质量高)。
-- 一次性安装脚本 `tools/setup-ocr.ps1`(pip 装到专用 venv;注意核对 Python 3.13 的 onnxruntime 轮子可用性,
-  不可用则脚本内用 `uv` 建 3.12 venv);macOS 提供等价 `tools/setup-ocr.sh`。
-- **运行链路**:Bridge 检测 PDF 无文字层 / 收到图片 → 调本地 `python -m ocr`(venv)识别 → 写 `.ocr.txt`。
-- **多模态兜底(用户拍板:只用 DSH 环境,零外部 API/key)**:扫描 PDF 的页图与图片附件走
-  **DSH 自带会话模型**的视觉能力(当前 deepseek-v4-pro,与本会话同款)。两条注入路径均为 DSH 原生:
-  ① `session.prompt` content 的 image 部件(base64,5MB/张、20 张/消息,M0 已实测通道存在);
-  ② 图片落盘 attachments 后由 Agent 用自己的 `read_image` 工具读取。不引入任何第三方视觉 API。
-  **实施首日必须实测**:用一张测试图验证 Builder 会话模型确实能"看到"它
-  (若 DSH 换成纯文本模型则自动降级为仅 OCR 文本,并回报用户)。
-- **全部失败才降级**:提示用户「无法识别,请文字描述」——仅此一档,不再是最常见路径。
+- 一次性安装脚本 `tools/setup-ocr.ps1`(pip 装到专用 venv `.venv-ocr`;实测 **Python 3.13.5 +
+  onnxruntime 1.29.0(cp313 轮子)直接可用**,无需 uv 兜底;脚本仍保留 uv/3.12 兜底分支);
+  macOS/Linux 提供等价 `tools/setup-ocr.sh`。
+- **运行链路**:Bridge 检测 PDF 无文字层 / 收到图片 → 调 venv 内 `python tools/ocr.py` 识别 → 写 `.ocr.txt`;
+  识别在任务排队期间后台跑(计划 prompt 前等待 ≤180s),完成后经 `task.stream` 通知「附件识别完成」。
+- **多模态兜底(原计划)**:~~DSH 原生 image 部件 + read_image~~ —— 见上方实测修正,已按用户拍板移除。
 
 ### 协议与实现变更
 
 1. **扩展 panel**:`<input type="file" multiple>` + 文件 chip(名称/大小/移除);白名单校验在前端先做一次。
 2. **SW → Bridge**:`POST /v1/tasks` 增 `attachments: [{name, mimeType, size, dataBase64}]`。
 3. **Bridge**:
-   - 图片 → 组装进 `session.prompt` 的 content 部件(DSH 原生通道)+ 落盘副本供 OCR;
-   - PDF/文本 → 解码写入 `generated/{taskId}/attachments/`;PDF 抽文本,为空则走 OCR;
-   - 异步 OCR(任务排队期间后台跑,不阻塞 agent-running;结果晚到则以 `task.stream` 通知「附件识别完成」);
-   - 新端点 `POST /v1/tasks/{taskId}/attachments`(计划修订阶段补传,同一目录追加);
-   - 依赖新增:`pdfjs-dist`(纯 JS);OCR 依赖在 venv 内(`rapidocr-onnxruntime`),不进 Bridge 的 package.json。
-4. **Agent prompt 契约**:任务块列出附件清单(原文件 + `.txt`/`.ocr.txt` 路径 + 一句话说明),要求「设计前先读取相关文件」,
+   - 全部附件解码写入 `generated/{taskId}/attachments/`;PDF 抽文本,为空则渲染页图走 OCR;
+   - 图片与扫描版 PDF 页走 RapidOCR(venv)识别 → `.ocr.txt`(仅 OCR 文本通道,无多模态);
+   - 异步 OCR(任务排队期间后台跑,计划 prompt 前等待 ≤180s;结果经 `task.stream` 通知「附件识别完成」);
+   - 新端点 `POST /v1/tasks/{taskId}/attachments`(plan-ready 阶段补传,同一目录追加);
+   - 依赖新增:`pdfjs-dist` + `@napi-rs/canvas`(Node 下 pdfjs 自动 fake worker + canvas);OCR 依赖在 venv 内(`rapidocr-onnxruntime`),不进 Bridge 的 package.json。
+4. **Agent prompt 契约**:任务块列出附件清单(原文件 + `.txt`/`.ocr.txt` 路径 + 「OCR 文本可能有误」标注),要求「设计前先读取相关文件」,
    并明确:**附件用途由 Agent 决定**——作为生成参考,或让生成的工作流包含文件处理环节(文件上传/文档提取/知识检索节点);
    取舍必须写进计划,供用户审阅。
 5. **落盘**:`generated/{taskId}/attachments/`(gitignored,与现有产物约定一致)。
@@ -84,20 +86,20 @@
 
 ### 验收
 
-1. 上传 1 个文字版 PDF + 1 个扫描版 PDF + 2 张图片 + 1 个 md → 任务创建成功;
-   文字版 PDF 出 `.txt`、扫描版 PDF 出 `.ocr.txt`、图片出 `.ocr.txt` 且进入多模态通道;
-2. 计划(特性二)中能体现 PDF 与图片里的内容(如引用文档字段名/图内文字);
-3. OCR 未安装时任务不阻塞:自动走多模态兜底并在面板提示;
-4. 传 .mp4/.docx → 前端与 Bridge 均拒绝并给出友好提示;
-5. U1–U3 回归不破坏。
+1. [x] 上传 1 个文字版 PDF + 1 个扫描版 PDF + 1 张图片 + 1 个 md → 任务创建成功;
+    文字版 PDF 出 `.txt`、扫描版 PDF 出 `.ocr.txt`(+页图)、图片出 `.ocr.txt`(无浏览器 E2E 实测,见 F1 报告);
+2. [x] 计划(特性二)中能体现 PDF 与图片里的内容(如引用文档字段名/图内文字)—— 无浏览器实测中 Agent 计划/构建均引用发票字段并设计文档提取节点;
+3. [x] OCR 未安装时任务不阻塞:附件标注「OCR 环境未安装,原文件保留供人工查看」并经 task.stream 面板提示(多模态兜底已按拍板移除);
+4. [x] 传 .mp4/.docx → 前端与 Bridge 均拒绝并给出友好提示(Bridge 400 attachment-rejected 已实测;前端 chip 校验同规则);
+5. [ ] U1–U3 回归不破坏(浏览器最终全流程实测时覆盖)。
 
 ### 风险
 
 - **OCR 质量**:RapidOCR 对清晰扫描件/截图质量高,对模糊、手写、复杂表格仍有错漏 →
-  缓解:多模态兜底通道让 Agent 视觉复核;结果里标注「OCR 文本,可能有误」。
-- **Python 环境**:onnxruntime 对 Python 3.13 的轮子可用性需在实施首日验证;
-  不可用则 `tools/setup-ocr.ps1` 用 `uv` 建 3.12 venv(脚本自动处理)。
-- 图片理解依赖 Builder 会话模型的视觉能力(当前 deepseek-v4-pro 支持;若换模型需复核)。
+  缓解:结果里标注「OCR 文本,可能有误」,页图与原文件保留供人工核对。
+- **Python 环境**:onnxruntime 对 Python 3.13 的轮子可用性已在实施首日验证(1.29.0 cp313 可用);
+  不可用时 `tools/setup-ocr.ps1` 用 `uv` 建 3.12 venv(脚本自动处理)。
+- 图片理解无多模态通道(实测否决,用户拍板仅 OCR 文本)。
 
 ---
 

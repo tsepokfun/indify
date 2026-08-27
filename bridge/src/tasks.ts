@@ -175,6 +175,15 @@ export class TaskStore {
     this.emit(frame);
   }
 
+  /** 更新附件元信息(F1,附件处理完成后刷新 textPath 等)。 */
+  setAttachments(taskId: string, list: TaskAttachment[]): void {
+    const t = this.tasks.get(taskId);
+    if (!t) return;
+    t.attachments = list;
+    this.persist(t);
+    this.emitFrame(t, undefined);
+  }
+
   /** 读 Agent 落盘产物(ir.json / workflow.yaml / result.json / graph.json)。 */
   readArtifact(taskId: string, file: string): Buffer | null {
     if (!ARTIFACT_WHITELIST.has(file)) return null;

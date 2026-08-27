@@ -20,6 +20,7 @@ import { DshClient } from './dsh.js';
 import { TaskStore } from './tasks.js';
 import type { TaskContext } from './tasks.js';
 import { Orchestrator } from './orchestrator.js';
+import { AttachmentProcessor, validateAttachments, saveAttachments, type IncomingAttachment } from './attachments.js';
 
 const VERSION = '0.2.0';
 
@@ -47,7 +48,12 @@ function broadcast(obj: unknown): void {
 /* ---------- 任务与编排 ---------- */
 const store = new TaskStore((frame) => broadcast(frame));
 const dsh = new DshClient(cfg.dsh);
-const orchestrator = new Orchestrator(dsh, store, cfg);
+// F1:附件处理(校验/落盘/PDF 抽文本/OCR),完成后更新任务附件元信息并广播 task.stream 通知
+const attachments = new AttachmentProcessor(
+  (taskId, list) => store.setAttachments(taskId, list),
+  (taskId, note) => store.emitRaw({ type: 'task.stream', data: { taskId, note } }),
+);
+const orchestrator = new Orchestrator(dsh, store, cfg, attachments);
 store.loadAll();
 dsh.startMux();
 // F3 实时流:mux 帧经编排器按 active 任务映射转发为 task.stream
@@ -120,19 +126,31 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       json(res, 400, { error: 'spec-required' });
       return;
     }
+    // F1:附件(可选);Bridge 侧权威校验,失败不建任务
+    const rawAtt = Array.isArray(body['attachments']) ? (body['attachments'] as IncomingAttachment[]) : [];
+    const check = validateAttachments(rawAtt);
+    if (!check.ok) {
+      json(res, 400, { error: 'attachment-rejected', message: check.error });
+      return;
+    }
     const task = store.create({
       mode,
       spec,
       context: body['context'] as TaskContext | undefined,
       sessionId: typeof body['sessionId'] === 'string' ? body['sessionId'] : undefined,
     });
+    if (check.validated.length > 0) {
+      const meta = saveAttachments(task.taskId, check.validated);
+      store.setAttachments(task.taskId, meta);
+      attachments.start(task.taskId, meta); // 后台识别,不阻塞排队
+    }
     orchestrator.kick();
     json(res, 201, { taskId: task.taskId, status: task.status });
     return;
   }
 
   // ---- 单任务操作 ----
-  const taskMatch = /^\/v1\/tasks\/([A-Za-z0-9_-]+)(\/(decision|injected))?$/.exec(path);
+  const taskMatch = /^\/v1\/tasks\/([A-Za-z0-9_-]+)(\/(decision|injected|attachments))?$/.exec(path);
   if (taskMatch) {
     const taskId = taskMatch[1]!;
     const sub = taskMatch[3];
@@ -143,6 +161,36 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     }
     if (req.method === 'GET' && !sub) {
       json(res, 200, task);
+      return;
+    }
+    // ---- F1:计划修订阶段补传附件(同一目录追加) ----
+    if (req.method === 'POST' && sub === 'attachments') {
+      if (task.status !== 'plan-ready') {
+        json(res, 409, { error: 'attachments-rejected', message: `任务状态为 ${task.status},仅在计划阶段(plan-ready)可补传附件` });
+        return;
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        json(res, 400, { error: 'bad-json' });
+        return;
+      }
+      const rawAtt = Array.isArray(body['attachments']) ? (body['attachments'] as IncomingAttachment[]) : [];
+      if (rawAtt.length === 0) {
+        json(res, 400, { error: 'attachments-required' });
+        return;
+      }
+      const existingImages = (task.attachments ?? []).filter((a) => a.kind === 'image').length;
+      const check = validateAttachments(rawAtt, existingImages);
+      if (!check.ok) {
+        json(res, 400, { error: 'attachment-rejected', message: check.error });
+        return;
+      }
+      const meta = saveAttachments(taskId, check.validated);
+      store.setAttachments(taskId, [...(task.attachments ?? []), ...meta]);
+      attachments.start(taskId, meta); // 追加批次后台识别
+      json(res, 202, { accepted: true, added: meta.map((m) => m.name) });
       return;
     }
     if (req.method === 'POST' && sub === 'decision') {

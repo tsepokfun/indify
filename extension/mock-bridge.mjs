@@ -455,6 +455,18 @@ async function route(req, res) {
     return;
   }
 
+  // F1:计划阶段补传附件(mock:仅确认,不实际处理)
+  const attAdd = p.match(/^\/v1\/tasks\/([^/]+)\/attachments$/);
+  if (attAdd && m === "POST") {
+    const task = tasks.get(attAdd[1]);
+    if (!task) return json(res, 404, { error: "task not found" });
+    const body = await readBody(req);
+    const names = (body.attachments || []).map((a) => a.name);
+    task.attachments = (task.attachments || []).concat(names);
+    broadcast({ type: "task.stream", data: { taskId: task.taskId, note: "附件已补传:" + names.join(",") } });
+    return json(res, 202, { accepted: true, added: names });
+  }
+
   const artifact = p.match(/^\/v1\/artifacts\/([^/]+)\/([^/]+)$/);
   if (artifact && m === "GET") {
     const task = tasks.get(artifact[1]);

@@ -5,6 +5,9 @@
 # Indify 项目本地配置
 .indifyrc.yaml
 
+# OCR 专用 venv(RapidOCR,数百 MB)
+.venv-ocr/
+
 # 运行时数据与生成产物
 volumes/
 generated/

@@ -94,6 +94,7 @@ function buildPlanBox(planText, planEdit, summary) {
       <div class="btn-row" style="margin-top:8px;">
         <button class="btn primary" data-action="build">开始构建 Build</button>
         <button class="btn" data-action="toggle-plan-revise">让 Agent 修订</button>
+        <button class="btn" data-action="add-attach-plan" title="补传附件(PDF/图片/文本)">📎 补传附件</button>
       </div>
       <div class="revise-box">
         <textarea id="plan-revise-note" placeholder="补充说明(可选;将连同上方计划全文一起发给 Agent)…"></textarea>
@@ -243,6 +244,10 @@ const els = {
   chatInput: document.getElementById("chat-input"),
   sendBtn: document.getElementById("send-btn"),
   modeHint: document.getElementById("mode-hint"),
+  attachBtn: document.getElementById("attach-btn"),
+  attachInput: document.getElementById("attach-input"),
+  attachRow: document.getElementById("attach-row"),
+  planAttachInput: document.getElementById("plan-attach-input"),
 };
 
 let state = {
@@ -250,6 +255,8 @@ let state = {
   currentTask: null,
   context: {}, // 最近一次 indify:status 携带的 Dify 页上下文
 };
+
+let pendingAttachments = []; // 待发送附件 {name, mimeType, size, dataBase64}
 
 let preview = null; // { taskId, data, summary }
 let previewLoadingTaskId = null;
@@ -495,6 +502,128 @@ async function loadPreview(taskId) {
   renderTaskCard();
 }
 
+// ================= 附件(F1:前端白名单校验;Bridge 为权威校验) =================
+const ATTACH_LIMITS = {
+  pdf: 20 * 1024 * 1024,
+  image: 5 * 1024 * 1024,
+  text: 5 * 1024 * 1024,
+  maxImages: 20,
+};
+const ATTACH_EXTS = {
+  pdf: ["pdf"],
+  image: ["png", "jpg", "jpeg", "webp", "gif"],
+  text: ["txt", "md", "csv", "json", "yaml", "yml"],
+};
+
+function attachKind(name) {
+  const ext = String(name || "").split(".").pop().toLowerCase();
+  for (const [kind, exts] of Object.entries(ATTACH_EXTS)) {
+    if (exts.includes(ext)) return kind;
+  }
+  return null;
+}
+
+function validateAttachFront(file, extraImages) {
+  const kind = attachKind(file.name);
+  if (!kind) {
+    return { ok: false, error: `「${file.name}」暂不支持(仅 PDF/图片/文本;音视频与 docx 等请转为 PDF 或文本)` };
+  }
+  const cap = ATTACH_LIMITS[kind];
+  if (file.size > cap) {
+    return { ok: false, error: `「${file.name}」超出大小上限(${Math.round(cap / 1024 / 1024)}MB/个)` };
+  }
+  if (kind === "image" && extraImages >= ATTACH_LIMITS.maxImages) {
+    return { ok: false, error: `图片数量超过上限(≤${ATTACH_LIMITS.maxImages} 张/任务)` };
+  }
+  return { ok: true, kind };
+}
+
+function fileToAttachment(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      const dataBase64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : "";
+      resolve({ name: file.name, mimeType: file.type || "", size: file.size, dataBase64 });
+    };
+    reader.onerror = () => reject(new Error(`读取「${file.name}」失败`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function currentImageCount() {
+  return pendingAttachments.filter((a) => attachKind(a.name) === "image").length;
+}
+
+function renderChips() {
+  els.attachRow.innerHTML = pendingAttachments
+    .map(
+      (a, i) => `<span class="chip"><span class="chip-name" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>` +
+        `<span class="chip-size">${(a.size / 1024).toFixed(0)}KB</span>` +
+        `<span class="chip-x" data-action="remove-attach" data-idx="${i}">×</span></span>`
+    )
+    .join("");
+}
+
+async function handleAttachFiles(files) {
+  const list = Array.from(files || []);
+  if (list.length === 0) return;
+  let images = currentImageCount();
+  const accepted = [];
+  for (const f of list) {
+    const check = validateAttachFront(f, images);
+    if (!check.ok) {
+      pushSystemMessage("附件被拒:" + check.error);
+      continue;
+    }
+    if (check.kind === "image") images += 1;
+    accepted.push(f);
+  }
+  for (const f of accepted) {
+    try {
+      pendingAttachments.push(await fileToAttachment(f));
+    } catch (e) {
+      pushSystemMessage(String((e && e.message) || e));
+    }
+  }
+  renderChips();
+}
+
+// 计划阶段补传附件(plan-ready 时可用;发送后由 Bridge 追加到任务目录)
+async function handlePlanAttachFiles(files) {
+  const t = state.currentTask;
+  if (!t) return;
+  const list = Array.from(files || []);
+  if (list.length === 0) return;
+  let images = 0;
+  const accepted = [];
+  for (const f of list) {
+    const check = validateAttachFront(f, images);
+    if (!check.ok) {
+      pushSystemMessage("附件被拒:" + check.error);
+      continue;
+    }
+    if (check.kind === "image") images += 1;
+    accepted.push(f);
+  }
+  const attachments = [];
+  for (const f of accepted) {
+    try {
+      attachments.push(await fileToAttachment(f));
+    } catch (e) {
+      pushSystemMessage(String((e && e.message) || e));
+    }
+  }
+  if (attachments.length === 0) return;
+  const res = await sendMessagePromise({ type: "indify:addAttachments", taskId: t.taskId, attachments });
+  if (res && res.ok) {
+    pushSystemMessage(`✅ 已补传 ${attachments.length} 个附件(Agent 将在下一轮计划修订/构建时读取)`);
+  } else {
+    pushSystemMessage("补传失败:" + ((res && res.error) || "未知错误"));
+  }
+  els.planAttachInput.value = "";
+}
+
 // ================= 任务动作 =================
 async function submit() {
   const spec = els.chatInput.value.trim();
@@ -504,12 +633,17 @@ async function submit() {
   pushUserMessage(spec);
 
   const mode = isWorkflowPage() ? "modify" : "create";
-  const res = await sendMessagePromise({ type: "indify:submitTask", mode, spec });
+  const message = { type: "indify:submitTask", mode, spec };
+  if (pendingAttachments.length > 0) message.attachments = pendingAttachments;
+  const res = await sendMessagePromise(message);
 
   els.sendBtn.disabled = false;
   els.chatInput.focus();
   if (!res.ok) {
     pushSystemMessage("提交失败:" + (res.error || "未知错误"));
+  } else {
+    pendingAttachments = [];
+    renderChips();
   }
   // 成功:SW 会广播 indify:task(queued)
 }
@@ -603,6 +737,25 @@ els.chatInput.addEventListener("keydown", (e) => {
   }
 });
 
+// F1 附件:📎 按钮与文件选择
+els.attachBtn.addEventListener("click", () => els.attachInput.click());
+els.attachInput.addEventListener("change", () => {
+  handleAttachFiles(els.attachInput.files);
+  els.attachInput.value = "";
+});
+els.planAttachInput.addEventListener("change", () => {
+  handlePlanAttachFiles(els.planAttachInput.files);
+});
+els.attachRow.addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-action='remove-attach']");
+  if (!chip) return;
+  const idx = Number(chip.dataset.idx);
+  if (!Number.isNaN(idx) && idx >= 0 && idx < pendingAttachments.length) {
+    pendingAttachments.splice(idx, 1);
+    renderChips();
+  }
+});
+
 els.tokenSave.addEventListener("click", async () => {
   const token = els.tokenInput.value.trim();
   if (!token) return;
@@ -633,6 +786,9 @@ els.taskCard.addEventListener("click", (e) => {
   switch (action) {
     case "build":
       doBuild(task.taskId);
+      break;
+    case "add-attach-plan":
+      els.planAttachInput.click();
       break;
     case "toggle-plan-revise": {
       const box = els.taskCard.querySelector(".plan-box .revise-box");

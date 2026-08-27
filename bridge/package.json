@@ -1,6 +1,6 @@
 {
   "name": "@indify/bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Indify Bridge — 本地伴生服务:扩展 ↔ DSH /api 中转、任务状态、adapter 与产物文件通道",
   "type": "module",
   "private": true,
@@ -13,7 +13,9 @@
     "serve": "node dist/server.js"
   },
   "dependencies": {
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "pdfjs-dist": "^4.10.38",
+    "@napi-rs/canvas": "^0.1.80"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

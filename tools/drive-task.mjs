@@ -34,8 +34,42 @@ const planEdit = pick('--plan-edit');
 const inject = args.includes('--inject');
 const stream = args.includes('--stream');
 const outDir = pick('--out') ?? join(process.cwd(), 'generated', 'drive');
+// --attach <path> 可重复:F1 附件
+const attachPaths = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--attach' && args[i + 1]) {
+    attachPaths.push(args[i + 1]);
+    i += 1;
+  }
+}
+const MIME_BY_EXT = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  csv: 'text/csv',
+  json: 'application/json',
+  yaml: 'text/yaml',
+  yml: 'text/yaml',
+};
+function buildAttachments() {
+  return attachPaths.map((p) => {
+    const data = readFileSync(p);
+    const ext = p.split('.').pop().toLowerCase();
+    return {
+      name: p.split(/[\\/]/).pop(),
+      mimeType: MIME_BY_EXT[ext] ?? '',
+      size: data.length,
+      dataBase64: data.toString('base64'),
+    };
+  });
+}
 if (!spec) {
-  console.error('用法: node tools/drive-task.mjs --spec "需求" [--revise "反馈"] [--revise-plan "补充"] [--plan-edit "旧=>新"] [--inject] [--stream] [--out dir]');
+  console.error('用法: node tools/drive-task.mjs --spec "需求" [--revise "反馈"] [--revise-plan "补充"] [--plan-edit "旧=>新"] [--attach 文件]* [--inject] [--stream] [--out dir]');
   process.exit(2);
 }
 
@@ -110,7 +144,13 @@ function connectWs(taskId) {
 
 const main = async () => {
   mkdirSync(outDir, { recursive: true });
-  const created = await http('POST', '/v1/tasks', { mode: 'create', spec });
+  const body = { mode: 'create', spec };
+  const atts = buildAttachments();
+  if (atts.length > 0) {
+    body.attachments = atts;
+    console.log(`[drive] 附件 ${atts.length} 个: ${atts.map((a) => a.name).join(', ')}`);
+  }
+  const created = await http('POST', '/v1/tasks', body);
   const taskId = created.taskId;
   const { close: closeWs } = await connectWs(taskId);
 

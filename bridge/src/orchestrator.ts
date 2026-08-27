@@ -22,8 +22,10 @@ import { join } from 'node:path';
 import { DshClient } from './dsh.js';
 import { TaskStore, type Task } from './tasks.js';
 import type { BridgeConfig } from './config.js';
+import type { AttachmentProcessor } from './attachments.js';
 
 const TURN_TIMEOUT_MS = 10 * 60_000;
+const ATTACHMENT_WAIT_MS = 180_000; // 计划 prompt 前等附件处理的时长上限
 // 版本防波堤纪律:这里绝不出现任何 Dify 版本号 / DSL 版本号 / 版本化参考目录名。
 // 版本细节(参考目录、节点白名单、字段)由 SKILL.md 与 adapter 声明,Agent 按 SKILL.md 的指针查阅。
 
@@ -46,15 +48,31 @@ function taskDir(task: Task): string {
   return join(GEN_ROOT, task.taskId);
 }
 
-/** 附件清单说明块(F1 接入;无附件时为空)。 */
-function attachmentBlock(task: Task): string {
+/** 附件清单说明块(F1;无附件时为空)。 */
+function attachmentBlock(task: Task, proc: AttachmentProcessor): string {
   const att = task.attachments;
   if (!att || att.length === 0) return '';
-  const lines = att.map((a) => `- ${a.name}(${a.kind}):${a.textPath ?? a.path}`);
-  return ['', '【附件】(已落盘到任务目录 attachments/ 与下述文本文件,设计前先读取相关文件):', ...lines].join('\n');
+  const dir = taskDir(task);
+  const st = proc.statusOf(task.taskId);
+  const lines = att.map((a) => {
+    const original = `${join(dir, 'attachments', a.path)}`;
+    if (a.textPath) {
+      const note = a.textPath.endsWith('.ocr.txt') ? '(该文本来自 OCR,可能有误)' : '';
+      return `- ${a.name}(${a.kind}):原件 ${original};文本 ${join(dir, a.textPath)} ${note}`;
+    }
+    if (a.kind === 'text') return `- ${a.name}(text):${original}(直接读原件)`;
+    if (st.status === 'running') return `- ${a.name}(${a.kind}):${original}(文本识别进行中,若读完发现仍无 .txt/.ocr.txt,请按尚无文本处理并在计划中说明)`;
+    return `- ${a.name}(${a.kind}):${original}(暂无可用文本,请按尚无文本处理并在计划中说明)`;
+  });
+  return [
+    '',
+    '【附件】已落盘到任务目录,设计前先读取相关文本文件;附件用途由你决定——作为生成参考,',
+    '或让生成的工作流包含文件处理环节(文件上传/文档提取/知识检索等节点),取舍必须写进计划:',
+    ...lines,
+  ].join('\n');
 }
 
-function buildPlanPrompt(task: Task): string {
+function buildPlanPrompt(task: Task, proc: AttachmentProcessor): string {
   const dir = taskDir(task);
   const modeLine =
     task.mode === 'modify'
@@ -70,7 +88,7 @@ function buildPlanPrompt(task: Task): string {
     '结构细节按需查阅 SKILL.md 中声明的「当前版本 references 目录」(SKILL.md 会指出该目录的确切路径)。',
     '',
     modeLine,
-    attachmentBlock(task),
+    attachmentBlock(task, proc),
     '',
     '【本阶段任务:只写实施计划,不要生成任何 IR / YAML / graph】',
     `1) 把需求翻译成一份中文实施计划(markdown 纯文本),写入 ${join(dir, 'plan.txt')};`,
@@ -86,12 +104,13 @@ function buildPlanPrompt(task: Task): string {
   ].join('\n');
 }
 
-function buildFromPlanPrompt(task: Task): string {
+function buildFromPlanPrompt(task: Task, proc: AttachmentProcessor): string {
   const dir = taskDir(task);
   if (task.mode === 'modify') {
     return [
       `Indify 任务 ${task.taskId}:用户已确认最终计划并点「开始构建」。`,
       `用户的最终计划文本(可能含手改)已由 Bridge 写入 ${join(dir, 'plan-final.txt')},它是唯一权威。`,
+      attachmentBlock(task, proc),
       '',
       '现在执行构建(遵守 SKILL.md §2.2 第 ② 步):',
       `1) 读取 ${join(dir, 'plan-final.txt')},以它为准制定修改方案;`,
@@ -111,6 +130,7 @@ function buildFromPlanPrompt(task: Task): string {
   return [
     `Indify 任务 ${task.taskId}:用户已确认最终计划并点「开始构建」。`,
     `用户的最终计划文本(可能含手改)已由 Bridge 写入 ${join(dir, 'plan-final.txt')},它是唯一权威。`,
+    attachmentBlock(task, proc),
     '',
     '现在执行构建(遵守 SKILL.md §2.2 第 ② 步):',
     `1) 读取 ${join(dir, 'plan-final.txt')},以它为准设计工作流 IR(只处理结构语义:节点/连边/变量绑定;不要手写 YAML);`,
@@ -126,13 +146,14 @@ function buildFromPlanPrompt(task: Task): string {
   ].join('\n');
 }
 
-function buildRevisePlanPrompt(task: Task, feedback: string): string {
+function buildRevisePlanPrompt(task: Task, feedback: string, proc: AttachmentProcessor): string {
   const dir = taskDir(task);
   return [
     `Indify 任务 ${task.taskId}:用户要求修订计划(文本框全文如下,请综合它重写):`,
     '```',
     feedback,
     '```',
+    attachmentBlock(task, proc),
     '',
     '请执行(遵守 SKILL.md §2.2 第 ③ 步):',
     `1) 重写 ${join(dir, 'plan.txt')}:中文实施计划(markdown),完整覆盖修订后的方案,`,
@@ -182,6 +203,7 @@ export class Orchestrator {
     private readonly dsh: DshClient,
     private readonly store: TaskStore,
     private readonly cfg: BridgeConfig,
+    private readonly attachments: AttachmentProcessor,
   ) {
     initPromptPaths(cfg.workspaceRoot);
   }
@@ -223,9 +245,11 @@ export class Orchestrator {
         );
       }
 
-      // 阶段一:计划(create 与 modify 都走)
+      // 阶段一:计划(create 与 modify 都走)。
+      // F1:附件文本识别在排队/建会话期间后台跑,这里等它(≤180s)保证计划 prompt 里文本路径已就位。
+      await this.attachments.waitProcessed(taskId, ATTACHMENT_WAIT_MS);
       this.store.transition(taskId, 'planning', { sessionId, phase: 'Agent 制定计划中' });
-      await this.promptAndWait(task, buildPlanPrompt(task));
+      await this.promptAndWait(task, buildPlanPrompt(task, this.attachments));
 
       const result1 = this.store.readResult(taskId);
       if (!result1) throw new Error('Agent 未产出 result.json');
@@ -278,9 +302,10 @@ export class Orchestrator {
         const planText = (opts?.planText ?? '').trim();
         // 用户最终计划落盘(唯一权威;允许含用户手改)
         writeFileSync(join(taskDir(task), 'plan-final.txt'), planText, 'utf8');
+        await this.attachments.waitProcessed(taskId, ATTACHMENT_WAIT_MS);
 
         this.store.transition(taskId, 'building', { phase: '按最终计划构建中' });
-        await this.promptAndWait(task, buildFromPlanPrompt(task));
+        await this.promptAndWait(task, buildFromPlanPrompt(task, this.attachments));
         const result = this.store.readResult(taskId);
         if (!result) throw new Error('Agent 未产出 result.json');
         if (result.status === 'failed') throw new Error(result.summary || 'Agent 报告失败');
@@ -294,7 +319,7 @@ export class Orchestrator {
         writeFileSync(join(taskDir(task), 'plan-feedback.txt'), fb, 'utf8');
 
         this.store.transition(taskId, 'planning', { phase: 'Agent 修订计划中' });
-        await this.promptAndWait(task, buildRevisePlanPrompt(task, fb));
+        await this.promptAndWait(task, buildRevisePlanPrompt(task, fb, this.attachments));
         const result = this.store.readResult(taskId);
         if (!result || result.status !== 'plan-ready') throw new Error('Agent 未回到 plan-ready');
         const plan = this.store.readArtifact(taskId, 'plan.txt');

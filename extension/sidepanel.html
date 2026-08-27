@@ -317,6 +317,47 @@
       cursor: pointer;
     }
     #send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #attach-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    #attach-row:empty { display: none; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #eef2ff;
+      border: 1px solid #c7d2fe;
+      color: #3730a3;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      max-width: 100%;
+    }
+    .chip .chip-name {
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chip .chip-x {
+      cursor: pointer;
+      color: #6b7280;
+      font-weight: 700;
+    }
+    #attach-btn {
+      height: 40px;
+      width: 40px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      font-size: 16px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    #attach-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -345,10 +386,16 @@
 
   <footer>
     <div id="mode-hint">将新建工作流</div>
+    <div id="attach-row"></div>
     <div class="composer">
+      <button id="attach-btn" title="附加文件(PDF/图片/文本)">📎</button>
       <textarea id="chat-input" placeholder="描述你想要的工作流或修改…(Enter 发送,Shift+Enter 换行)"></textarea>
       <button id="send-btn">发送</button>
     </div>
+    <input id="attach-input" type="file" multiple hidden
+      accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt,.md,.csv,.json,.yaml,.yml">
+    <input id="plan-attach-input" type="file" multiple hidden
+      accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt,.md,.csv,.json,.yaml,.yml">
   </footer>
 
   <script src="sidepanel.js"></script>

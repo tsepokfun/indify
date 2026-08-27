@@ -13,20 +13,32 @@ pnpm --dir bridge run start      # 编译 tsc → dist 并启动(node ≥20)
 
 首次运行自动在工作区根目录生成 `.indifyrc.yaml`(含随机 token,**严禁提交 git**)。
 
-## 接口(v2 两段式)
+## 接口(v2 两段式 + 附件 + 实时流)
 
 | 接口 | 说明 | 认证 |
 |---|---|---|
 | `GET /v1/health` | Bridge 版本 + DSH/Dify 可达性 + adapter 版本列表 | 无 |
-| `POST /v1/tasks` | 提交任务 `{mode:"create"\|"modify", spec, sessionId?, context?}` → `201 {taskId, status}` | token |
+| `POST /v1/tasks` | 提交任务 `{mode:"create"\|"modify", spec, sessionId?, context?, attachments?}` → `201 {taskId, status}`(attachments=[{name,mimeType,size,dataBase64}],Bridge 权威校验) | token |
 | `GET /v1/tasks/{taskId}` | 任务状态(task.json) | token |
 | `POST /v1/tasks/{taskId}/decision` | HITL:`{action:"build"\|"revise-plan"\|"approve"\|"revise", planText?, feedback?}` → 202 | token |
+| `POST /v1/tasks/{taskId}/attachments` | 计划阶段(plan-ready)补传附件 `{attachments}` → 202 | token |
 | `POST /v1/tasks/{taskId}/injected` | 注入完成回报 `{appId?, appUrl?}` → 202 | token |
 | `GET /v1/artifacts/{taskId}/{file}` | 产物原始文件:`ir.json` / `workflow.yaml` / `graph.json` / `result.json` / `plan.txt` / `plan-final.txt` | token |
 | `GET /v1/adapter/{version}` | `skills/dify-workflow-dsl/adapter/dify-{version}.json` | token |
-| `WS /v1/events?token=…` | 帧:`bridge.status` / `task.frame`(状态机每步广播) | token |
+| `WS /v1/events?token=…` | 帧:`bridge.status` / `task.frame` / `task.stream`(Agent 实时输出 + 附件识别通知) | token |
 
 认证头:`X-Indify-Token: <token>`(token 值在 `.indifyrc.yaml`)。
+
+## 附件处理(F1)
+
+- 白名单:PDF ≤20MB、图片(png/jpg/jpeg/webp/gif)≤5MB/个且 ≤20 张/任务、文本(txt/md/csv/json/yaml/yml)≤5MB;
+  其它类型与音视频拒绝(400 `attachment-rejected`)。扩展名与 MIME 双查,Bridge 侧为权威。
+- 落盘 `generated/{taskId}/attachments/`:文字版 PDF → pdfjs 抽文本 `<名>.txt`;扫描版 PDF → 渲染页图(≤30 页)
+  → RapidOCR `<名>.ocr.txt`;图片 → RapidOCR `<名>.ocr.txt`;文本类原样。
+- OCR 运行在专用 venv `.venv-ocr`(安装:`pwsh -File tools/setup-ocr.ps1` / `bash tools/setup-ocr.sh`,
+  Python 3.13 + onnxruntime 1.29 实测可用,脚本保留 uv/3.12 兜底);未安装时任务不阻塞,
+  附件标注「OCR 环境未安装,原文件保留供人工查看」。
+- 识别在任务排队期间后台跑(计划 prompt 前等待 ≤180s),完成后 `task.stream` 通知;附件用途由 Agent 决定并写进计划。
 
 ## 任务状态机(v2 两段式)
 
@@ -54,5 +66,6 @@ queued → planning → plan-ready ──build──→ building → draft-ready
 
 ## 依赖边界
 
-运行时仅 `ws`(HTTP 用 `node:http`,DSH 客户端用 Node 内置 fetch + WebSocket)。
+运行时仅 `ws`、`pdfjs-dist`(PDF 抽文本/页渲染,Node 下自动 fake worker)、`@napi-rs/canvas`(页渲染画布)。
+HTTP 用 `node:http`,DSH 客户端用 Node 内置 fetch + WebSocket;OCR 依赖在 `.venv-ocr`(RapidOCR),不进 package.json。
 TypeScript 经 `tsc` 编译到 `dist/`(Node ≥20 可跑)。
