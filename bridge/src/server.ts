@@ -50,6 +50,8 @@ const dsh = new DshClient(cfg.dsh);
 const orchestrator = new Orchestrator(dsh, store, cfg);
 store.loadAll();
 dsh.startMux();
+// F3 实时流:mux 帧经编排器按 active 任务映射转发为 task.stream
+dsh.onFrame((payload) => orchestrator.handleMuxPayload(payload));
 
 /* ---------- HTTP 工具 ---------- */
 function json(res: ServerResponse, status: number, body: unknown): void {

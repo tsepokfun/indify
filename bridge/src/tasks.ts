@@ -170,6 +170,11 @@ export class TaskStore {
     });
   }
 
+  /** 转发任意帧(非状态迁移帧,如 F3 的 task.stream)。 */
+  emitRaw(frame: { type: string; data: Record<string, unknown> }): void {
+    this.emit(frame);
+  }
+
   /** 读 Agent 落盘产物(ir.json / workflow.yaml / result.json / graph.json)。 */
   readArtifact(taskId: string, file: string): Buffer | null {
     if (!ARTIFACT_WHITELIST.has(file)) return null;

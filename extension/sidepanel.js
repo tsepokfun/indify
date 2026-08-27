@@ -105,8 +105,28 @@ function buildPlanBox(planText, planEdit, summary) {
     </div>`;
 }
 
-// 任务卡片:task = { taskId, status, mode, summary?, error?, spec?, sessionId?, inject? },preview,plan
-function buildTaskCard(task, preview, plan) {
+// Agent 实时输出(F3):segs = [{kind:"text"|"reasoning"|"tool"|"hint", text}]
+const TURNING_STATUSES = new Set(["planning", "building", "agent-running", "finalizing"]);
+
+function streamSegmentsHtml(segs) {
+  return (segs || [])
+    .map((s) => {
+      if (s.kind === "tool") {
+        return `<div class="ao-tool">🔧 执行工具中…${s.text ? " " + escapeHtml(s.text) : ""}</div>`;
+      }
+      if (s.kind === "hint") {
+        return `<div class="ao-hint">${escapeHtml(s.text)}</div>`;
+      }
+      if (s.kind === "reasoning") {
+        return `<span class="ao-think">${escapeHtml(s.text)}</span>`;
+      }
+      return `<span>${escapeHtml(s.text)}</span>`;
+    })
+    .join("");
+}
+
+// 任务卡片:task = { taskId, status, mode, summary?, error?, spec?, sessionId?, inject? },preview,plan,stream
+function buildTaskCard(task, preview, plan, stream) {
   const status = task.status || "queued";
   const isModify = task.mode === "modify";
   // modify 的 injecting 文案 = "写回画布中…"
@@ -126,6 +146,13 @@ function buildTaskCard(task, preview, plan) {
     !["plan-ready", "draft-ready", "ready", "done"].includes(status)
   ) {
     body += `<div class="task-summary">${escapeHtml(task.summary)}</div>`;
+  }
+
+  // F3:turn 进行中的状态渲染「Agent 输出」滚动区(逐字流式,60s 无输出有提示)
+  if (TURNING_STATUSES.has(status)) {
+    body += `<div class="agent-output" id="agent-output">${streamSegmentsHtml(
+      stream && stream.segs
+    )}</div>`;
   }
 
   if (status === "plan-ready") {
@@ -228,6 +255,81 @@ let preview = null; // { taskId, data, summary }
 let previewLoadingTaskId = null;
 let plan = null; // { taskId, text, edit }  text=服务器 plan.txt,edit=用户手改(优先)
 
+// F3 流式状态:只跟踪当前任务的一个流缓冲
+let stream = null; // { taskId, segs: [{kind, text}] }
+let streamIdleTimer = null;
+const STREAM_IDLE_HINT_MS = 60000; // 60s 无新输出 → 提示(计划 §3)
+
+function disarmStreamIdle() {
+  if (streamIdleTimer) {
+    clearTimeout(streamIdleTimer);
+    streamIdleTimer = null;
+  }
+}
+
+function armStreamIdle() {
+  disarmStreamIdle();
+  streamIdleTimer = setTimeout(() => {
+    const t = state.currentTask;
+    if (!t || !stream || stream.taskId !== t.taskId) return;
+    if (!TURNING_STATUSES.has(t.status)) return;
+    const seg = { kind: "hint", text: "… Agent 仍在工作(60 秒无新输出)" };
+    stream.segs.push(seg);
+    appendStreamSegment(seg);
+  }, STREAM_IDLE_HINT_MS);
+}
+
+function clearStream() {
+  disarmStreamIdle();
+  stream = null;
+}
+
+// 直接把一个流片段追加进当前卡片的输出区(不整体重绘,保护计划文本框的手改内容)
+function appendStreamSegment(seg) {
+  const box = els.taskCard.querySelector("#agent-output");
+  if (!box) return;
+  let el;
+  if (seg.kind === "tool") {
+    el = document.createElement("div");
+    el.className = "ao-tool";
+    el.textContent = "🔧 执行工具中…" + (seg.text ? " " + seg.text : "");
+  } else if (seg.kind === "hint") {
+    el = document.createElement("div");
+    el.className = "ao-hint";
+    el.textContent = seg.text;
+  } else if (seg.kind === "reasoning") {
+    el = document.createElement("span");
+    el.className = "ao-think";
+    el.textContent = seg.text;
+  } else {
+    el = document.createElement("span");
+    el.textContent = seg.text;
+  }
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+function onStream(data) {
+  const t = state.currentTask;
+  if (!t || !data || data.taskId !== t.taskId) return; // 防串台:只看当前任务
+  if (!TURNING_STATUSES.has(t.status)) return; // turn 已结束的迟到帧忽略
+  if (!stream || stream.taskId !== t.taskId) {
+    stream = { taskId: t.taskId, segs: [] };
+  }
+  if (typeof data.delta === "string" && data.delta.length > 0) {
+    const seg = { kind: data.kind === "reasoning" ? "reasoning" : "text", text: data.delta };
+    stream.segs.push(seg);
+    appendStreamSegment(seg);
+    armStreamIdle();
+  } else if (typeof data.tool === "string") {
+    const seg = { kind: "tool", text: data.tool };
+    stream.segs.push(seg);
+    appendStreamSegment(seg);
+    armStreamIdle();
+  }
+}
+
 function formatContext(ctx) {
   if (!ctx || !ctx.url) return "未检测到 Dify 页面(请打开 http://localhost)";
   const parts = [];
@@ -288,7 +390,8 @@ function renderTaskCard() {
   els.taskCard.style.display = "block";
   const p = preview && preview.taskId === t.taskId ? preview : null;
   const pl = plan && plan.taskId === t.taskId ? plan : null;
-  els.taskCard.innerHTML = buildTaskCard(t, p, pl);
+  const st = stream && stream.taskId === t.taskId ? stream : null;
+  els.taskCard.innerHTML = buildTaskCard(t, p, pl, st);
 }
 
 function render() {
@@ -596,6 +699,12 @@ function onTaskMessage(task) {
   const prev = state.currentTask;
   state.currentTask = task;
   persistPanelState();
+
+  // F3 流生命周期:新任务/turn 结束(wait 或终态)清空流区,turn 进行中保留缓冲
+  const isNewTask = !prev || prev.taskId !== task.taskId;
+  if (isNewTask) clearStream();
+  else if (!TURNING_STATUSES.has(task.status)) clearStream(); // 正式产物接管(plan-ready/draft-ready/…)
+
   if (task.status === "plan-ready" && (!prev || prev.taskId !== task.taskId || prev.status !== "plan-ready")) {
     plan = { taskId: task.taskId, text: null, edit: null };
     loadPlan(task.taskId);
@@ -612,6 +721,8 @@ chrome.runtime.onMessage.addListener((message) => {
     renderStatus(message);
   } else if (message.type === "indify:task") {
     onTaskMessage(message.task);
+  } else if (message.type === "indify:stream") {
+    onStream(message.data);
   }
 });
 

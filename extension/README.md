@@ -95,11 +95,21 @@ extension/
 | `POST /v1/tasks/{taskId}/injected` `{appId?, appUrl?}` | → `202 {accepted:true}` |
 | `GET /v1/artifacts/{taskId}/{file}` | 原始文件体(ir.json / result.json / workflow.yaml / graph.json / plan.txt / plan-final.txt) |
 | `GET /v1/adapter/1.16.1` | adapter JSON |
-| `WS /v1/events?token=…` | `bridge.status` 与 `task.frame` 帧 |
+| `WS /v1/events?token=…` | `bridge.status`、`task.frame`、`task.stream`(F3 Agent 实时输出)帧 |
 
 任务状态机(v2 两段式):
 `queued → planning → plan-ready ⇄(revise-plan)→ building → draft-ready(HITL)→ finalizing → ready → injecting → done | failed`。
 create 与 modify 都走计划阶段,无快速模式。
+
+### 4.3 Agent 实时输出流(F3)
+
+- Bridge 把任务会话的 `assistant/chunk` 文本 delta 组装为 `task.stream {taskId, delta, kind?}`
+  (`kind:"reasoning"` = 思考流,面板暗色渲染;`tool/call` → `{taskId, tool: 名称}` 提示「执行工具中…」)广播。
+- SW 转发为面板消息 `{ type:"indify:stream", data }`;面板在 planning/building/agent-running/finalizing
+  状态显示「Agent 输出」滚动区(等宽、自动滚底、逐字追加);**60 秒无新输出**显示「Agent 仍在工作」提示。
+- turn 结束(进入 plan-ready / draft-ready / ready 等)清空流式区并渲染正式产物(计划文本框 / 预览卡片)。
+- 防串台:Bridge 按「active 任务 ↔ sessionId」映射转发(仅 turn 进行期间登记)。
+- 流式仅为增强,不补发:断线重连后终态与产物经 `GET /v1/tasks/{id}` + artifacts 恢复。
 
 ## 5. 注入编排(ready 时 SW 自动触发,按 mode 分支)
 

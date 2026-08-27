@@ -255,6 +255,11 @@ async function connect() {
       handleBridgeStatus(frame.data);
     } else if (frame.type === "task.frame") {
       handleTaskFrame(frame.data);
+    } else if (frame.type === "task.stream") {
+      // F3:Agent 实时输出流 → 转给面板逐字渲染(仅增强,断线不补发)
+      chrome.runtime
+        .sendMessage({ type: "indify:stream", data: frame.data })
+        .catch(() => {});
     }
   };
 

@@ -349,10 +349,58 @@ export class Orchestrator {
     this.store.transition(taskId, 'done', { phase: '完成', appId, appUrl });
   }
 
+  /* ---------- F3 实时流:active 任务 ↔ 会话映射(防串台) ---------- */
+
+  private activeSession = new Map<string, string>(); // sessionId → taskId(仅 turn 进行期间)
+
+  /**
+   * mux 帧处理器(server.ts 经 dsh.onFrame 注册):
+   * 把目标任务会话的 assistant/chunk 文本 delta 与 tool/call 提示组装成 task.stream 广播。
+   * 同一会话串行跑多个任务:只有 turn 进行期间登记过的 sessionId→taskId 映射才转发。
+   */
+  handleMuxPayload(payload: Record<string, unknown>): void {
+    if (payload.type !== 'session/event') return;
+    const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+    const taskId = this.activeSession.get(sessionId);
+    if (!taskId) return;
+    const ev = payload.event as { type?: string; data?: unknown } | undefined;
+    if (!ev) return;
+
+    if (ev.type === 'assistant/chunk') {
+      const d = ev.data as { chunk?: { type?: string; text?: unknown } } | undefined;
+      const chunk = d?.chunk;
+      if (!chunk) return;
+      if (chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text.length > 0) {
+        this.store.emitRaw({ type: 'task.stream', data: { taskId, delta: chunk.text } });
+      } else if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string' && chunk.text.length > 0) {
+        // 思考流:面板以暗色小字渲染,让等待可感知(60s 无输出提示仅在真正静默时出现)
+        this.store.emitRaw({ type: 'task.stream', data: { taskId, delta: chunk.text, kind: 'reasoning' } });
+      }
+      return;
+    }
+
+    if (ev.type === 'tool/call') {
+      const d = (ev.data ?? {}) as Record<string, unknown>;
+      const name =
+        typeof d.name === 'string' ? d.name : typeof d.toolName === 'string' ? d.toolName : '';
+      this.store.emitRaw({ type: 'task.stream', data: { taskId, tool: name } });
+    }
+  }
+
   private async promptAndWait(task: Task, text: string): Promise<void> {
-    const beforeTurn = await this.dsh.lastTurnNumber(task.sessionId!);
-    await this.dsh.prompt(task.sessionId!, text);
-    await this.dsh.waitTurnEnd(task.sessionId!, beforeTurn, TURN_TIMEOUT_MS);
+    const sessionId = task.sessionId!;
+    // 登记映射:本 turn 的 mux 帧才转发给该任务(防串台)
+    this.activeSession.set(sessionId, task.taskId);
+    try {
+      const beforeTurn = await this.dsh.lastTurnNumber(sessionId);
+      await this.dsh.prompt(sessionId, text);
+      await this.dsh.waitTurnEnd(sessionId, beforeTurn, TURN_TIMEOUT_MS);
+    } finally {
+      // 仅当映射仍指向本任务时清除(新 turn 已覆盖则不动)
+      if (this.activeSession.get(sessionId) === task.taskId) {
+        this.activeSession.delete(sessionId);
+      }
+    }
   }
 
   private fail(taskId: string, e: unknown): void {

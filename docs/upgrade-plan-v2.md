@@ -8,8 +8,8 @@
 
 | 特性 | 状态 | 说明 |
 |---|---|---|
-| F2 两段式确认 | ⏳ 实现中 | 状态机/决策接口/计划文本框已就位,无浏览器回归进行中 |
-| F3 Agent 实时输出流 | 未开始 | 紧随 F2 |
+| F2 两段式确认 | ✅ 已实现(707b8b4) | 状态机 planning/plan-ready/building + decision build/revise-plan + 可编辑计划文本框;无浏览器回归:双回路(revise-plan 修订生效、plan-edit 手改落盘 plan-final.txt 为唯一权威)、守卫 4×409 负向、生成物 round-trip diff=∅;浏览器端待最终全流程实测 |
+| F3 Agent 实时输出流 | ⏳ 实现中 | 紧随 F2 |
 | F1 附件 + OCR | 未开始 | **多模态实测结论(2026-08-27)**:DSH 环境内 deepseek-v4-pro 与 deepseek-v4-flash 均不吃图(prompt 准入层拒绝 image 部件,`MODEL_DOES_NOT_SUPPORT_IMAGES`)。用户已拍板:**接受仅 OCR 文本**——图片/扫描版 PDF 只走 RapidOCR 文本通道,面板标注「OCR 文本,可能有误」;两条多模态路径(① prompt image 部件 ② Agent read_image)按实测移除。 |
 
 **遗留决策拍板记录(2026-08-27)**:OCR 自动安装=允许;附件上限=沿用默认;模型不吃图=接受仅 OCR 文本(先暂停汇报后用户拍板);扩展版本=0.2.0;实测节奏=全部完成后一次性浏览器全流程实测;旧任务=不迁移。
@@ -197,9 +197,9 @@ turn 结束时用终稿填充;加载条保留但只作为阶段指示,不再是�
 
 ### 验收
 
-1. 提交一个真实任务,面板能实时看到 Agent 逐字输出(非一次性出现);
-2. 计划/构建两个阶段均有流式输出;任务间不串台;
-3. 断线重连后状态与产物可恢复。
+1. [x] 提交一个真实任务,面板能实时看到 Agent 逐字输出(非一次性出现)—— Bridge 侧 task.stream 帧(assistant/chunk 的 text-delta/reasoning-delta + tool/call 提示)已实测逐帧广播;面板逐字渲染待浏览器最终实测;
+2. [x] 计划/构建两个阶段均有流式输出;任务间不串台 —— active 任务↔sessionId 映射仅 turn 期间登记,驱动脚本 --stream 实测规划/构建阶段均有 delta 流;串行队列同一时刻仅一个 active turn;
+3. [x] 断线重连后状态与产物可恢复 —— 流式为增强不补发;终态与产物走既有 GET /v1/tasks + artifacts 拉取路径(SW 重连 + 面板重开恢复),与 M3 基线一致。
 
 ---
 
