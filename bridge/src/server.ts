@@ -216,9 +216,12 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
           planText: typeof body['planText'] === 'string' ? body['planText'] : undefined,
         });
       } catch (e) {
-        json(res, 409, { error: 'decision-rejected', message: e instanceof Error ? e.message : String(e) });
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`[bridge] decision 拒绝: task=${taskId} action=${action} → ${message}`);
+        json(res, 409, { error: 'decision-rejected', message });
         return;
       }
+      console.log(`[bridge] decision 受理: task=${taskId} action=${action}`);
       json(res, 202, { accepted: true });
       return;
     }

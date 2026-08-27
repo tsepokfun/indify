@@ -4,7 +4,7 @@
  * 状态机(v2 两段式):queued → planning → plan-ready → building → draft-ready → finalizing → ready → injecting → done | failed
  *         (plan-ready 可经 revise-plan 回 planning 循环;draft-ready 可经 revise 回 agent-running;任何环节出错 → failed)
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { WORKSPACE_ROOT } from './config.js';
 
@@ -151,7 +151,11 @@ export class TaskStore {
 
   private persist(t: Task): void {
     mkdirSync(taskDir(t.taskId), { recursive: true });
-    writeFileSync(taskFile(t.taskId), JSON.stringify(t, null, 2), 'utf8');
+    // 原子写:先写临时文件再 rename,避免并发读取者看到半截 JSON(曾被观察到截断)
+    const target = taskFile(t.taskId);
+    const tmp = `${target}.tmp`;
+    writeFileSync(tmp, JSON.stringify(t, null, 2), 'utf8');
+    renameSync(tmp, target);
   }
 
   private emitFrame(t: Task, artifact?: { file: string; bytes: number }): void {

@@ -134,7 +134,11 @@ async function bridgeFetch(method, path, body) {
 function extractBridgeError(res) {
   if (res && res.error) return res.error;
   if (res && res.data && typeof res.data === "object") {
-    return res.data.error || res.data.message || "HTTP " + res.status;
+    // 优先展示 Bridge 的具体说明(如「任务状态为 planning,不接受 build(需 plan-ready)」),
+    // 仅当没有 message 时才退回错误码。
+    const d = res.data;
+    if (d.message && d.error) return d.message + "(" + d.error + ")";
+    return d.message || d.error || "HTTP " + res.status;
   }
   if (res && typeof res.data === "string") return res.data;
   return "HTTP " + (res && res.status ? res.status : "?");

@@ -92,14 +92,14 @@ function buildPlanBox(planText, planEdit, summary) {
       ${summaryHtml}
       <textarea id="plan-input" spellcheck="false">${escapeHtml(text)}</textarea>
       <div class="btn-row" style="margin-top:8px;">
-        <button class="btn primary" data-action="build">开始构建 Build</button>
+        <button class="btn primary" data-action="build"${decisionBusy ? " disabled" : ""}>开始构建 Build</button>
         <button class="btn" data-action="toggle-plan-revise">让 Agent 修订</button>
         <button class="btn" data-action="add-attach-plan" title="补传附件(PDF/图片/文本)">📎 补传附件</button>
       </div>
       <div class="revise-box">
         <textarea id="plan-revise-note" placeholder="补充说明(可选;将连同上方计划全文一起发给 Agent)…"></textarea>
         <div class="btn-row">
-          <button class="btn primary" data-action="submit-plan-revise">提交修订</button>
+          <button class="btn primary" data-action="submit-plan-revise"${decisionBusy ? " disabled" : ""}>提交修订</button>
           <button class="btn" data-action="cancel-plan-revise">取消</button>
         </div>
       </div>
@@ -165,13 +165,13 @@ function buildTaskCard(task, preview, plan, stream) {
     if (preview && preview.data) {
       body += `
         <div class="btn-row">
-          <button class="btn primary" data-action="approve">确认</button>
+          <button class="btn primary" data-action="approve"${decisionBusy ? " disabled" : ""}>确认</button>
           <button class="btn" data-action="toggle-revise">提出修改</button>
         </div>
         <div class="revise-box">
           <textarea id="revise-input" placeholder="描述需要修改的地方…"></textarea>
           <div class="btn-row">
-            <button class="btn primary" data-action="submit-revise">提交修改</button>
+            <button class="btn primary" data-action="submit-revise"${decisionBusy ? " disabled" : ""}>提交修改</button>
             <button class="btn" data-action="cancel-revise">取消</button>
           </div>
         </div>`;
@@ -648,11 +648,41 @@ async function submit() {
   // 成功:SW 会广播 indify:task(queued)
 }
 
+// 决策进行中标志:点击后立即禁用决策按钮,防止连点与「旧卡片」误点;新状态帧到达时复位。
+let decisionBusy = false;
+let decisionBusyTimer = null;
+
 async function doDecision(taskId, action, opts) {
+  if (decisionBusy) {
+    pushSystemMessage("上一个操作正在处理中,请稍候…");
+    return;
+  }
+  decisionBusy = true;
+  if (decisionBusyTimer) clearTimeout(decisionBusyTimer);
+  decisionBusyTimer = setTimeout(() => {
+    decisionBusy = false;
+    renderTaskCard();
+  }, 15000); // 兜底:15s 无任何帧则恢复按钮
+  renderTaskCard();
+
   const res = await sendMessagePromise({ type: "indify:decision", taskId, action, ...(opts || {}) });
   if (!res.ok) {
     pushSystemMessage("操作失败:" + (res.error || "未知错误"));
+    // 失败后立即向 SW 拉最新任务状态,让卡片回到真实状态(如 planning/plan-ready)
+    try {
+      const st = await sendMessagePromise({ type: "indify:getStatus" });
+      if (st && st.task) {
+        onTaskMessage(st.task);
+      } else {
+        decisionBusy = false;
+        renderTaskCard();
+      }
+    } catch (e) {
+      decisionBusy = false;
+      renderTaskCard();
+    }
   }
+  // 成功路径:等 task.frame 到达时 onTaskMessage 会复位 decisionBusy 并重绘
 }
 
 function currentPlanFullText() {
@@ -855,6 +885,13 @@ function onTaskMessage(task) {
   const prev = state.currentTask;
   state.currentTask = task;
   persistPanelState();
+
+  // 新状态帧到达 = 决策已生效:复位决策忙标志,恢复按钮
+  decisionBusy = false;
+  if (decisionBusyTimer) {
+    clearTimeout(decisionBusyTimer);
+    decisionBusyTimer = null;
+  }
 
   // F3 流生命周期:新任务/turn 结束(wait 或终态)清空流区,turn 进行中保留缓冲
   const isNewTask = !prev || prev.taskId !== task.taskId;
