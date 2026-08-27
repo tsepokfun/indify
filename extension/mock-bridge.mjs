@@ -1,24 +1,25 @@
 // Indify Mock Bridge — 本地联调用(可提交,仅用于开发自测,不参与生产)
 //
 // 用途:在真实 Indify Bridge(bridge/)未实现 / 未启动时,用 Node 起一个假 Bridge,
-//       让 Chrome 扩展的 service worker 能连通、走通 U1 全流程:
-//       提交任务 → 收到 task.frame 序列 → draft-ready 预览 → 确认 → ready → 注入。
+//       让 Chrome 扩展的 service worker 能连通、走通 v2 两段式全流程:
+//       提交任务 → task.frame 序列(planning → plan-ready → building → draft-ready → ready)
+//       → 计划确认(build/revise-plan)→ 结构确认(approve/revise)→ 注入。
 //
 // 用法(纯 Node 无依赖,Node 18+ 即可):
 //   node extension/mock-bridge.mjs                          # 默认端口 39181
 //   MOCK_BRIDGE_PORT=39182 node extension/mock-bridge.mjs   # 改端口(避开真 Bridge)
-//   MOCK_HITL=1 node extension/mock-bridge.mjs              # HITL 模式:停在 draft-ready 等 approve
+//   MOCK_HITL=1 node extension/mock-bridge.mjs              # HITL 模式:停在 plan-ready / draft-ready 等决策
 //
 // 端口默认 39181 与真 Bridge 一致;若端口被占用(真 Bridge 在跑)会提示冲突并退出。
 //
-// 实现接口(与 M2 Bridge 契约一致):
+// 实现接口(与 v2 Bridge 契约一致):
 //   POST /v1/tasks                       → 201 {taskId, status:"queued"} + 启动帧脚本
 //   GET  /v1/tasks/{taskId}              → 任务详情
-//   POST /v1/tasks/{taskId}/decision     → 202 {accepted:true}
+//   POST /v1/tasks/{taskId}/decision     → 202 {accepted:true}(build / revise-plan / approve / revise)
 //   POST /v1/tasks/{taskId}/injected     → 202 {accepted:true} + 推 injecting→done
-//   GET  /v1/artifacts/{taskId}/{file}   → ir.json / result.json / workflow.yaml
+//   GET  /v1/artifacts/{taskId}/{file}   → ir.json / result.json / workflow.yaml / graph.json / plan.txt / plan-final.txt
 //   GET  /v1/adapter/1.16.1              → 读 skills/dify-workflow-dsl/adapter/dify-1.16.1.json
-//   WS   /v1/events?token=…              → bridge.status + task.frame 序列
+//   WS   /v1/events?token=…              → bridge.status + task.frame + task.stream 帧
 
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
@@ -96,9 +97,17 @@ function irJson() {
 }
 
 function resultJson(task) {
+  const st =
+    task.status === "done"
+      ? "done"
+      : task.status === "ready"
+        ? "ready"
+        : task.status === "draft-ready"
+          ? "draft-ready"
+          : "plan-ready";
   const obj = {
-    status: task.status === "done" ? "done" : task.status === "ready" ? "ready" : "draft-ready",
-    summary: task.summary || "按情绪和主题分派客服工单的 3 节点工作流",
+    status: st,
+    summary: task.summary || (st === "plan-ready" ? planSummary() : "按情绪和主题分派客服工单的 3 节点工作流"),
   };
   if (task.appId) obj.appId = task.appId;
   if (task.appUrl) obj.appUrl = task.appUrl;
@@ -225,7 +234,7 @@ function handleWsData(socket, buf) {
   }
 }
 
-// ---------- 任务脚本 ----------
+// ---------- 任务脚本(v2 两段式) ----------
 function pushFrame(task, extra) {
   task.status = extra.status;
   task.phase = extra.phase || extra.status;
@@ -243,53 +252,111 @@ function pushFrame(task, extra) {
   });
 }
 
-// 自动脚本:queued(创建时已推)→ agent-running → draft-ready → finalizing → ready
-const STEPS = [
-  { status: "agent-running", phase: "agent-running" },
+// 模拟 Agent 流式输出(F3 联调):在 planning / building 阶段吐几段 delta
+function emitStream(task, text) {
+  const parts = text.match(/.{1,24}/g) || [text];
+  let i = 0;
+  const tick = () => {
+    if (i >= parts.length) return;
+    broadcast({ type: "task.stream", data: { taskId: task.taskId, delta: parts[i] } });
+    i += 1;
+    setTimeout(tick, 120);
+  };
+  tick();
+}
+
+function planText(task) {
+  return (
+    `# 实施计划(mock)\n\n` +
+    `## 目标\n${task.spec || "示例工作流"}\n\n` +
+    `## 节点清单\n- start:开始节点,接收用户输入\n- question_classifier:工单分类,按情绪与主题分派\n- end:结束节点,输出分类结果\n\n` +
+    `## 数据流\nstart.output -> question_classifier.input;class_1 -> end.input\n\n` +
+    `## 验收要点\n3 节点链路可导入 Dify 控制台并正常渲染。\n`
+  );
+}
+
+function planSummary() {
+  return "计划:3 节点工单分类工作流(计划阶段 mock)";
+}
+
+// 阶段表:每个阶段可带 pause(等决策)与 stream(模拟 Agent 输出)
+const STAGES = [
+  { status: "planning", phase: "planning", stream: "正在分析需求…\n- 确定节点语义类型\n- 设计连边与数据流\n" },
+  { status: "plan-ready", phase: "plan-ready", summary: "计划已生成,等待确认。" },
+  { status: "building", phase: "building", stream: "按最终计划构建 IR…\n- start -> question_classifier\n- question_classifier -> end\n" },
   { status: "draft-ready", phase: "draft-ready", summary: "已生成 3 节点工作流结构,等待确认。" },
   { status: "finalizing", phase: "finalizing" },
   { status: "ready", phase: "ready", summary: "终稿已就绪,可注入画布。" },
 ];
 
-function runScript(taskId) {
+function runStage(taskId, fromIndex) {
   const task = tasks.get(taskId);
   if (!task) return;
-
-  let i = 0;
+  task.paused = false;
+  let i = fromIndex;
   const next = () => {
-    if (i >= STEPS.length) return;
-    const step = STEPS[i];
-    const isDraft = i === 1;
-    pushFrame(task, step);
+    if (i >= STAGES.length) return;
+    const stage = STAGES[i];
+    const isPlanReady = stage.status === "plan-ready";
+    const isDraft = stage.status === "draft-ready";
+    if (stage.stream) emitStream(task, stage.stream);
+    pushFrame(task, stage);
     i += 1;
+    if (HITL && isPlanReady && !task.built) {
+      task.pausedAt = "plan-ready";
+      return; // 停在计划确认
+    }
     if (HITL && isDraft && !task.approved) {
-      task.paused = true;
-      return; // 停在 draft-ready
+      task.pausedAt = "draft-ready";
+      return; // 停在结构确认
     }
     setTimeout(next, STEP_DELAY);
   };
   next();
 }
 
+function runScript(taskId) {
+  runStage(taskId, 0);
+}
+
+// 计划阶段:build(携带最终计划文本)/ revise-plan(重写计划)
+function onBuild(task) {
+  task.built = true;
+  task.planFinal = "已记录用户最终计划文本";
+  if (task.pausedAt === "plan-ready") {
+    runStage(task.taskId, 2); // building 起继续
+  }
+}
+
+function onRevisePlan(task) {
+  task.built = false;
+  if (task.pausedAt === "plan-ready") {
+    // 模拟 Agent 重写计划:回 planning → plan-ready
+    pushFrame(task, { status: "planning", phase: "planning" });
+    emitStream(task, "按反馈修订计划…\n- 吸收补充说明\n- 重写节点清单\n");
+    setTimeout(() => {
+      pushFrame(task, { status: "plan-ready", phase: "plan-ready", summary: "计划已修订,等待确认。" });
+      task.pausedAt = "plan-ready";
+    }, STEP_DELAY);
+  }
+}
+
 function onApprove(task) {
   task.approved = true;
-  if (task.paused) {
-    task.paused = false;
-    pushFrame(task, { status: "finalizing", phase: "finalizing" });
-    setTimeout(() => {
-      pushFrame(task, { status: "ready", phase: "ready", summary: "终稿已就绪,可注入画布。" });
-    }, STEP_DELAY);
+  if (task.pausedAt === "draft-ready") {
+    runStage(task.taskId, 4); // finalizing 起继续
   }
 }
 
 function onRevise(task) {
   task.approved = false;
-  task.paused = false;
-  pushFrame(task, { status: "agent-running", phase: "agent-running" });
-  setTimeout(() => {
-    pushFrame(task, { status: "draft-ready", phase: "draft-ready", summary: "已根据修改意见重新生成,等待确认。" });
-    task.paused = true;
-  }, STEP_DELAY);
+  if (task.pausedAt === "draft-ready") {
+    pushFrame(task, { status: "agent-running", phase: "agent-running" });
+    setTimeout(() => {
+      pushFrame(task, { status: "draft-ready", phase: "draft-ready", summary: "已根据修改意见重新生成,等待确认。" });
+      task.pausedAt = "draft-ready";
+    }, STEP_DELAY);
+  }
 }
 
 // ---------- 路由 ----------
@@ -329,7 +396,9 @@ async function route(req, res) {
       appId: null,
       appUrl: null,
       approved: false,
-      paused: false,
+      built: false,
+      pausedAt: null,
+      planFinal: null,
     };
     tasks.set(taskId, task);
     json(res, 201, { taskId, status: "queued" });
@@ -364,7 +433,9 @@ async function route(req, res) {
     const task = tasks.get(decision[1]);
     if (!task) return json(res, 404, { error: "task not found" });
     const body = await readBody(req);
-    if (body.action === "approve") onApprove(task);
+    if (body.action === "build") onBuild(task);
+    else if (body.action === "revise-plan") onRevisePlan(task);
+    else if (body.action === "approve") onApprove(task);
     else if (body.action === "revise") onRevise(task);
     return json(res, 202, { accepted: true });
   }
@@ -394,6 +465,8 @@ async function route(req, res) {
     else if (file === "result.json") content = resultJson(task);
     else if (file === "workflow.yaml") content = workflowYaml();
     else if (file === "graph.json") content = graphJson();
+    else if (file === "plan.txt") content = planText(task);
+    else if (file === "plan-final.txt") content = task.planFinal || planText(task);
     else return json(res, 404, { error: "artifact not found" });
     res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Content-Length": Buffer.byteLength(content) });
     return res.end(content);

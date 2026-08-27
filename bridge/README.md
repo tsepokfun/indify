@@ -13,33 +13,38 @@ pnpm --dir bridge run start      # 编译 tsc → dist 并启动(node ≥20)
 
 首次运行自动在工作区根目录生成 `.indifyrc.yaml`(含随机 token,**严禁提交 git**)。
 
-## 接口(M2)
+## 接口(v2 两段式)
 
 | 接口 | 说明 | 认证 |
 |---|---|---|
 | `GET /v1/health` | Bridge 版本 + DSH/Dify 可达性 + adapter 版本列表 | 无 |
 | `POST /v1/tasks` | 提交任务 `{mode:"create"\|"modify", spec, sessionId?, context?}` → `201 {taskId, status}` | token |
 | `GET /v1/tasks/{taskId}` | 任务状态(task.json) | token |
-| `POST /v1/tasks/{taskId}/decision` | HITL:`{action:"approve"\|"revise", feedback?}` → 202 | token |
+| `POST /v1/tasks/{taskId}/decision` | HITL:`{action:"build"\|"revise-plan"\|"approve"\|"revise", planText?, feedback?}` → 202 | token |
 | `POST /v1/tasks/{taskId}/injected` | 注入完成回报 `{appId?, appUrl?}` → 202 | token |
-| `GET /v1/artifacts/{taskId}/{file}` | 产物原始文件:`ir.json` / `workflow.yaml` / `graph.json` / `result.json` | token |
+| `GET /v1/artifacts/{taskId}/{file}` | 产物原始文件:`ir.json` / `workflow.yaml` / `graph.json` / `result.json` / `plan.txt` / `plan-final.txt` | token |
 | `GET /v1/adapter/{version}` | `skills/dify-workflow-dsl/adapter/dify-{version}.json` | token |
 | `WS /v1/events?token=…` | 帧:`bridge.status` / `task.frame`(状态机每步广播) | token |
 
 认证头:`X-Indify-Token: <token>`(token 值在 `.indifyrc.yaml`)。
 
-## 任务状态机
+## 任务状态机(v2 两段式)
 
 ```
-queued → agent-running → draft-ready ──approve──→ finalizing → ready → injecting → done
-                    ↑                              │
-                    └────────── revise ────────────┘
-                    任何环节出错 → failed
+queued → planning → plan-ready ──build──→ building → draft-ready ──approve──→ finalizing → ready → injecting → done
+              ↑___________│                                        │
+              └─ revise-plan(循环修订计划)                         └─ revise(结构迭代)
+                                 任何环节出错 → failed
 ```
 
-- `draft-ready`:Agent 已产出 `generated/{taskId}/ir.json` + `result.json{status:"draft-ready"}`(HITL 闸口,等扩展发 decision)
-- `ready`:`workflow.yaml` 就绪,扩展侧注入
-- 状态持久化于 `generated/{taskId}/task.json`,Bridge 重启后中断任务标记 failed,其余可查
+- `plan-ready`:Agent 已产出 `generated/{taskId}/plan.txt` + `result.json{status:"plan-ready"}`(计划闸口,
+  等扩展发 `build`(带 `planText`,用户最终计划,唯一权威)或 `revise-plan`(带 `feedback`))。
+  Bridge 会把用户的 planText 落盘为 `plan-final.txt`、反馈落盘为 `plan-feedback.txt`。
+- `draft-ready`:Agent 已产出 `ir.json`(create)或 `graph.json`(modify)+ `result.json{status:"draft-ready"}`
+  (结构闸口,等扩展发 `approve` / `revise`)
+- `ready`:`workflow.yaml`(create)或终稿 `graph.json`(modify)就绪,扩展侧注入
+- create 与 modify **都走计划阶段**(无快速模式);旧任务不迁移,重启时中断态任务标记 failed
+- 状态持久化于 `generated/{taskId}/task.json`;`plan-ready / draft-ready / ready` 等稳定等待态重启后保留
 
 ## DSH 会话驱动
 
@@ -51,7 +56,3 @@ queued → agent-running → draft-ready ──approve──→ finalizing → r
 
 运行时仅 `ws`(HTTP 用 `node:http`,DSH 客户端用 Node 内置 fetch + WebSocket)。
 TypeScript 经 `tsc` 编译到 `dist/`(Node ≥20 可跑)。
-
-## M3 起将新增
-
-modify 模式草稿往返(读 graph → Agent 改 → 写回)、U3 会话续聊链路、多任务队列优化。

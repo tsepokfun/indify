@@ -68,6 +68,34 @@ Builder Agent 的职责(它只产出 IR)。
    `workflow.graph` 对象,不是完整 DSL;用 `--graph` 参数校验(见 validate.mjs 用法)。
 5. **不要**把 graph 转回 YAML 再导入(那只会新建应用);修改只走草稿写回。
 
+### 2.2 计划-构建两段式流程(create 与 modify 都走,无快速模式)
+
+```
+① Prompt#1(计划):Agent 只写计划,不产任何结构
+     写 generated/{taskId}/plan.txt(中文实施计划,markdown 纯文本)
+     写 generated/{taskId}/result.json {"status":"plan-ready","summary":"<一句中文>","warnings":[]}
+     └─ 扩展把 plan.txt 显示为「可编辑文本框」(对话中部)
+        ├─ 用户直接手改文本 → 点「开始构建」:Bridge 把文本框全文落盘为 plan-final.txt(唯一权威)
+        │    → Prompt#2(build):读 plan-final.txt 执行原生成流程
+        │       create:产 ir.json + result.json{status:"draft-ready"}
+        │       modify:产 graph.json + result.json{status:"draft-ready"}
+        └─ 用户点「让 Agent 修订」(附补充说明)→ Bridge 发文本框全文为反馈
+             → Prompt#2(revise-plan):重写 plan.txt → 回 plan-ready(循环)
+```
+
+**计划内容要求(Agent 必读):**
+1. 计划用**中文**;结构清晰,给用户审阅(用户会直接编辑它)。
+2. 必须包含:目标概述、节点清单(每个节点的语义类型/职责/关键配置)、连边与数据流
+   (变量绑定、控制流)、modify 模式的改动清单(增/删/改哪些节点与连线)、验收要点。
+3. 若有附件(见 §7 第 8 条),必须在计划里说明**附件用途取舍**:作为生成参考,或让生成的工作流
+   包含文件处理环节(文件上传/文档提取/知识检索等节点)——两者皆可,由 Agent 决定并写明理由。
+4. 计划只是蓝图:构建时以用户最终计划文本(plan-final.txt)为唯一权威;若构建结果与计划有
+   合理偏差,在 result.json 的 warnings 里说明。
+
+**result.json 状态枚举(全流程):**
+`plan-ready`(计划已就绪)→ `draft-ready`(结构预览就绪)→ `ready`(终稿就绪)→ `failed`。
+Agent 在每个阶段只写与当前阶段匹配的状态;Bridge 会按状态机守卫拒绝错位状态。
+
 ## 3. IR 契约(唯一稳定接口)
 
 > 权威定义见 `DESIGN.md` §6。此处是执行要点;`irVersion` 恒 `"1.0"`。
@@ -140,19 +168,23 @@ trigger 系列等 15 类)在 IR 的 `node.type` 中**原样透传 DSL type 字�
     未来版本再实现「由 bindings 自动生成 value_selector」。
   - 不要手写 `{{#node_id.field#}}` 之外的语法;模板引用同样走 `{{#上游id.变量#}}`。
 
-## 6. HITL 规范(ADR-5)
+## 6. HITL 规范(ADR-5,v2 两段式)
 
-主闸口在扩展聊天框(预览确认),原生画布为最终人工检查;不依赖 DSH 提问系统。
+主闸口在扩展聊天框(计划确认 + 预览确认两道),原生画布为最终人工检查;不依赖 DSH 提问系统。
 
 ```
-用户输入 → Bridge → Agent 生成 IR → result.json{status:"draft-ready"}
-  → 扩展渲染结构预览卡片(节点/连边清单 + 数据流说明)
-      ├─ [确认] → Bridge 续发 approved → Agent 产终稿(YAML/graph) → status:"ready" → 注入
-      └─ [修改意见] → Bridge 续发意见 → Agent 迭代 IR → 回到预览
+用户输入 → Bridge → Agent 写计划 → result.json{status:"plan-ready"}
+  → 扩展渲染「可编辑计划文本框」(对话中部,用户可直接手改)
+      ├─ [开始构建] → 用户最终计划文本(唯一权威)→ Agent 构建 → result.json{status:"draft-ready"}
+      │    → 扩展渲染结构预览卡片(节点/连边清单 + 数据流说明)
+      │        ├─ [确认] → Bridge 续发 approved → Agent 产终稿(YAML/graph) → status:"ready" → 注入
+      │        └─ [修改意见] → Bridge 续发意见 → Agent 迭代结构 → 回到预览
+      └─ [让 Agent 修订](附补充说明)→ Agent 重写计划 → 回到 plan-ready(循环)
 注入完成 → 扩展提示"已更新,请查看画布"(原生画布 = 最终人工闸口)
 ```
 
-- Agent 在 `draft-ready` 阶段**只提交 IR + 摘要**,不产 YAML;确认后再调 `ir_to_dsl` 产终稿。
+- Agent 在 `plan-ready` 阶段**只提交计划文本**,不产任何结构;构建后 `draft-ready` 只提交
+  IR/graph + 摘要,不产 YAML;确认后再调 `ir_to_dsl` 产终稿。
 - 预览内容 = IR 的 nodes/edges 清单(标题、语义类型、连边、bindings 意图),不暴露 DSL 细节。
 
 ## 7. Agent 使用协议(必读)
@@ -162,10 +194,16 @@ trigger 系列等 15 类)在 IR 的 `node.type` 中**原样透传 DSL type 字�
 3. **提交前校验**:`node scripts/validate.mjs <ir.json|workflow.yaml>` 必须 `有效 ✅`。
 4. **round-trip 回归**:版本升级或改适配层后跑 `node tests/round-trip.mjs`,diff 必须为空。
 5. **落盘约定**(ADR-6,见 DESIGN.md §9):只写自己 `taskId` 的目录 `generated/{taskId}/`:
-   `ir.json`(终稿 IR)、`workflow.yaml`(create 模式 DSL)、`graph.json`(modify 模式新 graph)、
-   `result.json`({status, appId?, appUrl?, summary, warnings[]})。聊天消息只给简短摘要。
+   `plan.txt`(阶段一实施计划)、`ir.json`(终稿 IR)、`workflow.yaml`(create 模式 DSL)、
+   `graph.json`(modify 模式新 graph)、`result.json`({status, appId?, appUrl?, summary, warnings[]})。
+   `plan-final.txt`(用户最终计划)与 `plan-feedback.txt`(计划修订反馈)由 **Bridge** 写,Agent 只读。
+   聊天消息只给简短摘要。
 6. **节点 id**:官方导出为数字字符串;新生成可用短语义 id(如 `n_llm_1`),全图唯一即可。
 7. **不要**修改 `tests/fixtures/official-sample-1.16.1.yml`(round-trip 官方基准)。
+8. **附件**(任务块会列出 `generated/{taskId}/attachments/` 清单,含抽文本/OCR 文本路径):
+   设计前先读取相关文本文件(原文本类附件直接读;PDF/图片读 `.txt`/`.ocr.txt` 文本,注意
+   该文本来自 OCR,可能有误);附件用途由你决定——作为生成参考,或让生成的工作流包含
+   文件处理环节(文件上传/文档提取/知识检索等节点),取舍必须写进计划(§2.2)。
 
 ## 8. 版本升级流程(只改本 skill / adapter)
 

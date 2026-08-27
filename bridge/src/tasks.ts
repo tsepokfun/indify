@@ -1,8 +1,8 @@
 /**
  * 任务存储与状态机。
- * 持久化:generated/{taskId}/task.json(Bridge 只写 task.json;ir.json/workflow.yaml/result.json 由 Agent 写)。
- * 状态机:queued → agent-running → draft-ready → finalizing → ready → injecting → done | failed
- *         (draft-ready 可经 revise 回 agent-running;任何环节出错 → failed)
+ * 持久化:generated/{taskId}/task.json(Bridge 只写 task.json;ir.json/workflow.yaml/result.json/plan.txt 由 Agent 写)。
+ * 状态机(v2 两段式):queued → planning → plan-ready → building → draft-ready → finalizing → ready → injecting → done | failed
+ *         (plan-ready 可经 revise-plan 回 planning 循环;draft-ready 可经 revise 回 agent-running;任何环节出错 → failed)
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -10,6 +10,9 @@ import { WORKSPACE_ROOT } from './config.js';
 
 export type TaskStatus =
   | 'queued'
+  | 'planning'
+  | 'plan-ready'
+  | 'building'
   | 'agent-running'
   | 'draft-ready'
   | 'finalizing'
@@ -24,6 +27,14 @@ export interface TaskContext {
   currentGraph?: unknown;
 }
 
+/** 附件元信息(F1;任务目录 attachments/ 内的文件)。 */
+export interface TaskAttachment {
+  name: string; // 原始文件名
+  kind: 'pdf' | 'image' | 'text'; // 类别
+  path: string; // 相对任务目录的原件路径(attachments/<name>)
+  textPath?: string; // 抽文本/OCR 产物路径(attachments/<name>.txt / .ocr.txt),存在才有
+}
+
 export interface Task {
   taskId: string;
   mode: 'create' | 'modify';
@@ -36,11 +47,12 @@ export interface Task {
   error?: string;
   appId?: string;
   appUrl?: string;
+  attachments?: TaskAttachment[];
   createdAt: number;
   updatedAt: number;
 }
 
-export const ARTIFACT_WHITELIST = new Set(['ir.json', 'workflow.yaml', 'graph.json', 'result.json']);
+export const ARTIFACT_WHITELIST = new Set(['ir.json', 'workflow.yaml', 'graph.json', 'result.json', 'plan.txt', 'plan-final.txt']);
 
 const GEN_DIR = join(WORKSPACE_ROOT, 'generated');
 
@@ -69,8 +81,15 @@ export class TaskStore {
       if (!existsSync(f)) continue;
       try {
         const t = JSON.parse(readFileSync(f, 'utf8')) as Task;
-        if (t.status === 'agent-running' || t.status === 'finalizing' || t.status === 'queued') {
-          // 进程重启时中断的任务一律转 failed(不会自动续跑)
+        // v2 决策:进行中的旧任务不迁移——中断态任务一律转 failed(不会自动续跑)。
+        // plan-ready / draft-ready / ready 是稳定的 HITL 等待态,重启后保留,用户可继续操作。
+        if (
+          t.status === 'queued' ||
+          t.status === 'planning' ||
+          t.status === 'building' ||
+          t.status === 'agent-running' ||
+          t.status === 'finalizing'
+        ) {
           t.status = 'failed';
           t.error = 'Bridge 重启导致任务中断';
           t.updatedAt = Date.now();

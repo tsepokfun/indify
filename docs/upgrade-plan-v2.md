@@ -1,8 +1,18 @@
 # Indify 升级计划 v2.1 —— 文件上传 + 两段式确认 + Agent 实时输出流
 
-> 状态:**规划稿 v2.1,已按用户评审意见修订,待终审开工**(2026-08-20)
+> 状态:**实施中**(2026-08-27 开工;终审已过,遗留决策已全部拍板)
 > 范围:三个特性;不包含音视频;不改 IR 契约与版本防波堤架构。
 > 前置文档:`DESIGN.md`(已实现基线)、`docs/m0-findings.md`。
+
+## 实施进度与已拍板补充
+
+| 特性 | 状态 | 说明 |
+|---|---|---|
+| F2 两段式确认 | ⏳ 实现中 | 状态机/决策接口/计划文本框已就位,无浏览器回归进行中 |
+| F3 Agent 实时输出流 | 未开始 | 紧随 F2 |
+| F1 附件 + OCR | 未开始 | **多模态实测结论(2026-08-27)**:DSH 环境内 deepseek-v4-pro 与 deepseek-v4-flash 均不吃图(prompt 准入层拒绝 image 部件,`MODEL_DOES_NOT_SUPPORT_IMAGES`)。用户已拍板:**接受仅 OCR 文本**——图片/扫描版 PDF 只走 RapidOCR 文本通道,面板标注「OCR 文本,可能有误」;两条多模态路径(① prompt image 部件 ② Agent read_image)按实测移除。 |
+
+**遗留决策拍板记录(2026-08-27)**:OCR 自动安装=允许;附件上限=沿用默认;模型不吃图=接受仅 OCR 文本(先暂停汇报后用户拍板);扩展版本=0.2.0;实测节奏=全部完成后一次性浏览器全流程实测;旧任务=不迁移。
 
 ---
 
@@ -149,10 +159,10 @@ queued → planning → plan-ready → building → draft-ready → finalizing �
 
 ### 验收
 
-1. 完整链路:输入 → 计划文本框(对话中部,可直接编辑)→ 用户改文本 → Build → 结构预览 → 确认 → 注入,每步状态与文案正确;
-2. 「让 Agent 修订」≥2 轮不丢上下文(U3 语义);revise-plan 中补传附件可用;
-3. 用户手改后的计划文本确实传给 Agent 且生效(抽查:改掉节点名,预览中体现);
-4. 无计划直接 Build 不可达(状态机守卫);U1–U3 回归通过。
+1. [x] 完整链路:输入 → 计划文本框(对话中部,可直接编辑)→ 用户改文本 → Build → 结构预览 → 确认 → 注入,每步状态与文案正确 —— 无浏览器回归已验证 queued→planning→plan-ready→building→draft-ready→finalizing→ready(浏览器端待最终全流程实测);
+2. [ ] 「让 Agent 修订」≥2 轮不丢上下文(U3 语义);revise-plan 中补传附件可用(补传附件在 F1 验收);
+3. [ ] 用户手改后的计划文本确实传给 Agent 且生效(抽查:改掉节点名,预览中体现)—— plan-final.txt 落盘与驱动脚本 --plan-edit 通道已验证,「生效抽查」待浏览器实测;
+4. [x] 无计划直接 Build 不可达(状态机守卫)—— Bridge decide() 按 status 守卫(build/revise-plan 仅 plan-ready;approve/revise 仅 draft-ready);U1–U3 回归待最终实测。
 
 ### 风险
 

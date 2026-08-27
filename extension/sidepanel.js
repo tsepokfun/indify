@@ -1,4 +1,4 @@
-// Indify side panel — M3(新建 U1 + 就地修改 U2 + 续聊 U3)
+// Indify side panel — v2(M3 基础 + 两段式确认 F2)
 // 从 SW 拉状态 / 订阅 onMessage 渲染;无外部依赖,纯 JS。
 // 关键渲染逻辑抽为纯函数(见下),便于静态自查。
 
@@ -7,6 +7,9 @@
 function statusLabel(status) {
   const map = {
     queued: "排队中",
+    planning: "制定计划中",
+    "plan-ready": "等待确认计划",
+    building: "构建中",
     "agent-running": "Agent 生成中",
     "draft-ready": "等待确认",
     finalizing: "生成终稿中",
@@ -20,12 +23,15 @@ function statusLabel(status) {
 
 function statusProgress(status) {
   const map = {
-    queued: 10,
-    "agent-running": 35,
-    "draft-ready": 55,
-    finalizing: 70,
-    ready: 85,
-    injecting: 92,
+    queued: 8,
+    planning: 25,
+    "plan-ready": 45,
+    building: 55,
+    "agent-running": 60,
+    "draft-ready": 68,
+    finalizing: 78,
+    ready: 88,
+    injecting: 94,
     done: 100,
     failed: 100,
   };
@@ -35,7 +41,7 @@ function statusProgress(status) {
 function statusClass(status) {
   if (status === "done") return "s-done";
   if (status === "failed") return "s-failed";
-  if (status === "draft-ready") return "s-wait";
+  if (status === "plan-ready" || status === "draft-ready") return "s-wait";
   return "s-running";
 }
 
@@ -75,8 +81,32 @@ function buildPreviewCard(data, summary) {
     </div>`;
 }
 
-// 任务卡片:task = { taskId, status, mode, summary?, error?, spec?, sessionId?, inject? },preview = { data, summary }
-function buildTaskCard(task, preview) {
+// 计划文本框(可编辑,对话中部;planEdit = 用户手改版本,优先级高于服务器版 planText)
+function buildPlanBox(planText, planEdit, summary) {
+  const text = planEdit != null ? planEdit : planText || "";
+  const summaryHtml = summary ? `<div class="task-summary">${escapeHtml(summary)}</div>` : "";
+  return `
+    <div class="plan-box">
+      <div class="plan-hint">实施计划(可直接编辑)。手改后点「开始构建」即以当前文本为准;
+        或点「让 Agent 修订」附补充说明让 Agent 重写。</div>
+      ${summaryHtml}
+      <textarea id="plan-input" spellcheck="false">${escapeHtml(text)}</textarea>
+      <div class="btn-row" style="margin-top:8px;">
+        <button class="btn primary" data-action="build">开始构建 Build</button>
+        <button class="btn" data-action="toggle-plan-revise">让 Agent 修订</button>
+      </div>
+      <div class="revise-box">
+        <textarea id="plan-revise-note" placeholder="补充说明(可选;将连同上方计划全文一起发给 Agent)…"></textarea>
+        <div class="btn-row">
+          <button class="btn primary" data-action="submit-plan-revise">提交修订</button>
+          <button class="btn" data-action="cancel-plan-revise">取消</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// 任务卡片:task = { taskId, status, mode, summary?, error?, spec?, sessionId?, inject? },preview,plan
+function buildTaskCard(task, preview, plan) {
   const status = task.status || "queued";
   const isModify = task.mode === "modify";
   // modify 的 injecting 文案 = "写回画布中…"
@@ -91,8 +121,15 @@ function buildTaskCard(task, preview) {
   if (status === "failed") {
     const err = task.error || (task.inject && task.inject.error) || "任务失败";
     body += `<div class="task-error">${escapeHtml(err)}</div>`;
-  } else if (task.summary && !["draft-ready", "ready", "done"].includes(status)) {
+  } else if (
+    task.summary &&
+    !["plan-ready", "draft-ready", "ready", "done"].includes(status)
+  ) {
     body += `<div class="task-summary">${escapeHtml(task.summary)}</div>`;
+  }
+
+  if (status === "plan-ready") {
+    body += buildPlanBox(plan && plan.text, plan && plan.edit, task.summary);
   }
 
   if (status === "draft-ready") {
@@ -189,6 +226,7 @@ let state = {
 
 let preview = null; // { taskId, data, summary }
 let previewLoadingTaskId = null;
+let plan = null; // { taskId, text, edit }  text=服务器 plan.txt,edit=用户手改(优先)
 
 function formatContext(ctx) {
   if (!ctx || !ctx.url) return "未检测到 Dify 页面(请打开 http://localhost)";
@@ -249,7 +287,8 @@ function renderTaskCard() {
   }
   els.taskCard.style.display = "block";
   const p = preview && preview.taskId === t.taskId ? preview : null;
-  els.taskCard.innerHTML = buildTaskCard(t, p);
+  const pl = plan && plan.taskId === t.taskId ? plan : null;
+  els.taskCard.innerHTML = buildTaskCard(t, p, pl);
 }
 
 function render() {
@@ -291,7 +330,17 @@ function pushSystemMessage(text) {
   render();
 }
 
-// ================= 预览加载 =================
+// ================= 计划加载(plan-ready 阶段) =================
+async function loadPlan(taskId) {
+  const res = await sendMessagePromise({ type: "indify:getArtifact", taskId, file: "plan.txt" });
+  const text = res && res.ok ? res.text : null;
+  if (state.currentTask && state.currentTask.taskId === taskId) {
+    plan = { taskId, text: text || "", edit: null };
+    renderTaskCard();
+  }
+}
+
+// ================= 预览加载(draft-ready 阶段) =================
 function maybeLoadPreview(taskId) {
   if (!taskId) return;
   if (preview && preview.taskId === taskId) return;
@@ -362,11 +411,41 @@ async function submit() {
   // 成功:SW 会广播 indify:task(queued)
 }
 
-async function doDecision(taskId, action, feedback) {
-  const res = await sendMessagePromise({ type: "indify:decision", taskId, action, feedback });
+async function doDecision(taskId, action, opts) {
+  const res = await sendMessagePromise({ type: "indify:decision", taskId, action, ...(opts || {}) });
   if (!res.ok) {
     pushSystemMessage("操作失败:" + (res.error || "未知错误"));
   }
+}
+
+function currentPlanFullText() {
+  // 用户手改优先;否则用服务器加载的 plan.txt
+  const el = els.taskCard.querySelector("#plan-input");
+  const domText = el ? el.value : null;
+  if (plan && domText != null) return domText;
+  return plan && plan.text ? plan.text : "";
+}
+
+async function doBuild(taskId) {
+  const planText = currentPlanFullText();
+  if (!planText.trim()) {
+    pushSystemMessage("计划文本为空,无法构建。请等待计划生成或输入内容。");
+    return;
+  }
+  if (plan) plan.edit = null; // 手改文本已作为唯一权威提交
+  await doDecision(taskId, "build", { planText });
+}
+
+async function doSubmitPlanRevise(taskId) {
+  const full = currentPlanFullText();
+  const noteEl = els.taskCard.querySelector("#plan-revise-note");
+  const note = noteEl ? noteEl.value.trim() : "";
+  const feedback = note ? `${full}\n\n【补充说明】\n${note}` : full;
+  if (!feedback.trim()) {
+    pushSystemMessage("计划文本为空,无法提交修订。");
+    return;
+  }
+  await doDecision(taskId, "revise-plan", { feedback });
 }
 
 async function retrySubmit(task) {
@@ -433,6 +512,13 @@ els.tokenSave.addEventListener("click", async () => {
   }
 });
 
+// 计划文本框手改 → 记录到 plan.edit(容器委托,innerHTML 重绘后依然生效)
+els.taskCard.addEventListener("input", (e) => {
+  if (e.target && e.target.id === "plan-input" && plan) {
+    plan.edit = e.target.value;
+  }
+});
+
 // 任务卡片按钮委托(容器不变,innerHTML 重绘后无需重绑)
 els.taskCard.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-action]");
@@ -442,6 +528,24 @@ els.taskCard.addEventListener("click", (e) => {
   if (!task) return;
 
   switch (action) {
+    case "build":
+      doBuild(task.taskId);
+      break;
+    case "toggle-plan-revise": {
+      const box = els.taskCard.querySelector(".plan-box .revise-box");
+      if (box) box.classList.toggle("show");
+      break;
+    }
+    case "submit-plan-revise":
+      doSubmitPlanRevise(task.taskId);
+      break;
+    case "cancel-plan-revise": {
+      const box = els.taskCard.querySelector(".plan-box .revise-box");
+      if (box) box.classList.remove("show");
+      const ta = els.taskCard.querySelector("#plan-revise-note");
+      if (ta) ta.value = "";
+      break;
+    }
     case "approve":
       doDecision(task.taskId, "approve");
       break;
@@ -461,7 +565,7 @@ els.taskCard.addEventListener("click", (e) => {
       const ta = els.taskCard.querySelector("#revise-input");
       const feedback = ta ? ta.value.trim() : "";
       if (!feedback) return;
-      doDecision(task.taskId, "revise", feedback);
+      doDecision(task.taskId, "revise", { feedback });
       break;
     }
     case "retry":
@@ -489,8 +593,13 @@ els.taskCard.addEventListener("click", (e) => {
 // ================= 消息订阅 =================
 function onTaskMessage(task) {
   if (!task) return;
+  const prev = state.currentTask;
   state.currentTask = task;
   persistPanelState();
+  if (task.status === "plan-ready" && (!prev || prev.taskId !== task.taskId || prev.status !== "plan-ready")) {
+    plan = { taskId: task.taskId, text: null, edit: null };
+    loadPlan(task.taskId);
+  }
   if (task.status === "draft-ready") {
     maybeLoadPreview(task.taskId);
   }
@@ -515,6 +624,9 @@ async function init() {
     if (data.currentTask) state.currentTask = data.currentTask;
     renderStatus({ bridge: data.bridge || {}, context: data.context || {} });
     render();
+    if (state.currentTask && state.currentTask.status === "plan-ready") {
+      loadPlan(state.currentTask.taskId);
+    }
     if (state.currentTask && state.currentTask.status === "draft-ready") {
       maybeLoadPreview(state.currentTask.taskId);
     }
@@ -530,6 +642,9 @@ async function init() {
       state.currentTask = res.task;
       persistPanelState();
       render();
+      if (state.currentTask.status === "plan-ready") {
+        loadPlan(state.currentTask.taskId);
+      }
       if (state.currentTask.status === "draft-ready") {
         maybeLoadPreview(state.currentTask.taskId);
       }

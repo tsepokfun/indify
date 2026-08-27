@@ -35,14 +35,18 @@ extension/
 
 1. 在 Dify 应用列表页(`http://localhost/apps`)打开侧边栏,输入框下方提示「将新建工作流」。
 2. 输入需求(如「做一个客服工单分类工作流,按情绪和主题分派」)→ 发送。
-3. 状态流转:排队中 → Agent 生成中 → 等待确认(结构预览卡片)→ [确认/提出修改] → 生成终稿 → 已就绪 → 注入画布 → 完成。
-4. 完成后显示「打开工作流画布 →」,点击打开新建应用画布(原生画布 = 最终人工闸口)。
+3. 状态流转:排队中 → 制定计划中 → **等待确认计划**(对话中部出现可编辑计划文本框)→
+   [开始构建 Build / 让 Agent 修订] → 构建中 → 等待确认(结构预览卡片)→ [确认/提出修改] →
+   生成终稿 → 已就绪 → 注入画布 → 完成。
+4. 计划文本框可直接手改:改完点「开始构建」即以当前文本为准;点「让 Agent 修订」可附补充说明让 Agent 重写计划(循环)。
+5. 完成后显示「打开工作流画布 →」,点击打开新建应用画布(原生画布 = 最终人工闸口)。
 
 ### U2 就地修改(modify)
 
 1. 打开某工作流画布页(`http://localhost/app/{uuid}/workflow`),侧边栏提示「将修改当前工作流」。
 2. 输入修改需求(如「把知识检索节点改成先检索再重排序,输出加置信度字段」)→ 发送。
-3. SW 先读当前草稿(`currentGraph`)随任务提交,Agent 产出新 `graph.json` + `result.json`。
+3. SW 先读当前草稿(`currentGraph`)随任务提交;modify 同样先走**计划阶段**(计划 = 改动方案说明),
+   确认构建后 Agent 产出新 `graph.json` + `result.json`。
 4. 预览确认后,ready 时 SW **就地写回草稿 → 单次刷新**,画布立即呈现(无 YAML 往返)。
 5. 完成后显示「画布已更新(已刷新)」。
 
@@ -67,7 +71,7 @@ extension/
 | SW → panel(广播) | `{ type:"indify:task", task }` | 任务状态(submitAck 或 task.frame 转译) |
 | panel → SW | `{ type:"indify:getStatus" }` | 拉当前状态 → `{bridge, context, task, lastSessionId}` |
 | panel → SW | `{ type:"indify:submitTask", mode:"create"\|"modify", spec }` | 提交任务 → `{ok, taskId, status}`(modify 失败返回 `needDify:true`) |
-| panel → SW | `{ type:"indify:decision", taskId, action:"approve"\|"revise", feedback? }` | HITL 决策 → `{ok}` |
+| panel → SW | `{ type:"indify:decision", taskId, action:"build"\|"revise-plan"\|"approve"\|"revise", planText?, feedback? }` | HITL 决策 → `{ok}`(build 带 planText=用户最终计划;revise-plan 带 feedback=计划全文+补充) |
 | panel → SW | `{ type:"indify:getArtifact", taskId, file }` | 拉产物 → `{ok, text}` |
 | panel → SW | `{ type:"indify:getAdapter" }` | 拉 adapter(缓存)→ `{ok, adapter}` |
 | panel → SW | `{ type:"indify:retryInject", taskId }` | 注入失败/无 Dify 页后重试 → `{ok}` |
@@ -87,13 +91,15 @@ extension/
 |---|---|
 | `POST /v1/tasks` `{mode, spec, sessionId?, context?}` | → `201 {taskId, status:"queued"}`;modify 的 `context={appId, appUrl, currentGraph}` |
 | `GET /v1/tasks/{taskId}` | 任务详情 |
-| `POST /v1/tasks/{taskId}/decision` `{action, feedback?}` | → `202 {accepted:true}` |
+| `POST /v1/tasks/{taskId}/decision` `{action, planText?, feedback?}` | `action:"build"`(plan-ready,planText=用户最终计划,唯一权威)/ `"revise-plan"`(plan-ready,feedback=计划全文+补充)/ `"approve"` / `"revise"`(draft-ready,feedback)→ `202 {accepted:true}` |
 | `POST /v1/tasks/{taskId}/injected` `{appId?, appUrl?}` | → `202 {accepted:true}` |
-| `GET /v1/artifacts/{taskId}/{file}` | 原始文件体(ir.json / result.json / workflow.yaml / graph.json) |
+| `GET /v1/artifacts/{taskId}/{file}` | 原始文件体(ir.json / result.json / workflow.yaml / graph.json / plan.txt / plan-final.txt) |
 | `GET /v1/adapter/1.16.1` | adapter JSON |
 | `WS /v1/events?token=…` | `bridge.status` 与 `task.frame` 帧 |
 
-任务状态机:`queued → agent-running → draft-ready(HITL)→ finalizing → ready → injecting → done | failed`。
+任务状态机(v2 两段式):
+`queued → planning → plan-ready ⇄(revise-plan)→ building → draft-ready(HITL)→ finalizing → ready → injecting → done | failed`。
+create 与 modify 都走计划阶段,无快速模式。
 
 ## 5. 注入编排(ready 时 SW 自动触发,按 mode 分支)
 

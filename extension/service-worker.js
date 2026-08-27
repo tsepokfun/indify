@@ -588,9 +588,12 @@ async function submitTask(message) {
 }
 
 async function sendDecision(message) {
-  const { taskId, action, feedback } = message;
+  const { taskId, action, feedback, planText } = message;
   if (!taskId || !action) return { ok: false, error: "缺少 taskId 或 action" };
-  const res = await bridgeFetch("POST", `/v1/tasks/${taskId}/decision`, { action, feedback });
+  const body = { action };
+  if (feedback !== undefined) body.feedback = feedback;
+  if (planText !== undefined) body.planText = planText; // build:用户最终计划文本(唯一权威)
+  const res = await bridgeFetch("POST", `/v1/tasks/${taskId}/decision`, body);
   if (!res.ok) return { ok: false, error: extractBridgeError(res) };
   return { ok: true };
 }

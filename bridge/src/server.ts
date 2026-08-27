@@ -1,13 +1,13 @@
 /**
- * Indify Bridge(M2)
+ * Indify Bridge(v2 两段式)
  * - GET  /v1/health                    健康检查 + 两端连通性 + adapter 版本(无 token)
  * - POST /v1/tasks                     提交任务 {mode:"create"|"modify", spec, sessionId?, context?}
  * - GET  /v1/tasks/{taskId}            任务状态
- * - POST /v1/tasks/{taskId}/decision   HITL:{action:"approve"|"revise", feedback?}
+ * - POST /v1/tasks/{taskId}/decision   HITL:{action:"build"|"revise-plan"|"approve"|"revise", planText?, feedback?}
  * - POST /v1/tasks/{taskId}/injected   注入完成回报 {appId?, appUrl?}
- * - GET  /v1/artifacts/{taskId}/{file} 产物文件(ir.json / workflow.yaml / graph.json / result.json)
+ * - GET  /v1/artifacts/{taskId}/{file} 产物文件(ir.json / workflow.yaml / graph.json / result.json / plan.txt / plan-final.txt)
  * - GET  /v1/adapter/{version}         adapter JSON
- * - WS   /v1/events?token=…            帧:bridge.status / task.frame
+ * - WS   /v1/events?token=…            帧:bridge.status / task.frame / task.stream
  * 认证:除 health 外要求 X-Indify-Token 头或 ?token=;Bridge 只监听 127.0.0.1。
  */
 import { createServer } from 'node:http';
@@ -24,6 +24,12 @@ import { Orchestrator } from './orchestrator.js';
 const VERSION = '0.2.0';
 
 const cfg: BridgeConfig = loadConfig();
+
+// 本地守护进程韧性:未捕获的 promise 拒绝只记录不崩溃(Node 默认会退出进程,
+// 一次异常请求不应让 Bridge 掉线;任务状态全部落盘,重启可恢复)。
+process.on('unhandledRejection', (reason) => {
+  console.error('[bridge] unhandledRejection:', reason instanceof Error ? reason.stack ?? reason.message : reason);
+});
 
 /* ---------- WS 客户端集(用于广播) ---------- */
 const wsClients = new Set<WebSocket>();
@@ -145,13 +151,20 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
         json(res, 400, { error: 'bad-json' });
         return;
       }
-      const action = body['action'] === 'approve' ? 'approve' : body['action'] === 'revise' ? 'revise' : null;
+      const raw = body['action'];
+      const action =
+        raw === 'approve' || raw === 'revise' || raw === 'build' || raw === 'revise-plan'
+          ? (raw as 'approve' | 'revise' | 'build' | 'revise-plan')
+          : null;
       if (!action) {
-        json(res, 400, { error: 'action-must-be-approve-or-revise' });
+        json(res, 400, { error: 'action-must-be-approve-revise-build-or-revise-plan' });
         return;
       }
       try {
-        void orchestrator.decide(taskId, action, typeof body['feedback'] === 'string' ? body['feedback'] : undefined);
+        void orchestrator.decide(taskId, action, {
+          feedback: typeof body['feedback'] === 'string' ? body['feedback'] : undefined,
+          planText: typeof body['planText'] === 'string' ? body['planText'] : undefined,
+        });
       } catch (e) {
         json(res, 409, { error: 'decision-rejected', message: e instanceof Error ? e.message : String(e) });
         return;
