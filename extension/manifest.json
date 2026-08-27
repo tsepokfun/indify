@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Indify",
-  "version": "0.1.0",
-  "description": "Indify — 用自然语言生成/修改 Dify 工作流的 Chrome 扩展(M3 新建+就地修改+续聊)",
+  "version": "0.2.0",
+  "description": "Indify — 用自然语言生成/修改 Dify 工作流的 Chrome 扩展(v2 两段式确认+实时输出流+附件 OCR)",
   "minimum_chrome_version": "116",
   "permissions": ["sidePanel", "storage", "tabs"],
   "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],

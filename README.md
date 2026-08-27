@@ -44,6 +44,12 @@ pnpm --dir bridge run start   # 监听 127.0.0.1:39181;首次运行生成 .indif
 # 自检:curl http://127.0.0.1:39181/v1/health  → 返回 dsh/dify 可达性
 ```
 
+### 2.5 OCR 环境(附件功能用,可选)
+```powershell
+pwsh -File tools/setup-ocr.ps1     # 装 RapidOCR 到 .venv-ocr(约数百 MB;macOS/Linux 用 bash tools/setup-ocr.sh)
+```
+不装也能用全部功能,只是图片/扫描版 PDF 附件无法识别文本(面板会提示)。
+
 ### 3. Chrome 扩展(unpacked)
 1. Chrome → `chrome://extensions` → 打开「开发者模式」
 2. 「加载已解压的扩展程序」→ 选择 `D:\difyIndify\extension`
@@ -51,11 +57,16 @@ pnpm --dir bridge run start   # 监听 127.0.0.1:39181;首次运行生成 .indif
 4. 侧边栏粘贴 `.indifyrc.yaml` 里的 `token` 值 → 显示「Bridge 已连接」
    (打包分发:`pwsh -File tools/package-extension.ps1` → `dist/indify-extension-<ver>.zip`)
 
-## 使用
+## 使用(v2)
 
-- **新建(U1)**:Dify 任意页面 → 扩展聊天框输入需求 → 结构预览卡片 → [确认] → 自动导入并跳转新应用画布
-- **修改(U2)**:打开某工作流画布页 → 聊天框说"把 XX 改成 YY" → 预览 → [确认] → 草稿就地写回 + 单次刷新,画布更新(无 YAML 往返)
+- **新建(U1)**:Dify 任意页面 → 聊天框输入需求(📎 可带 PDF/图片/文本附件)→ **可编辑计划文本框**
+  (可直接手改)→ [开始构建 Build / 让 Agent 修订] → 结构预览卡片 → [确认] → 自动导入并跳转新应用画布
+- **修改(U2)**:打开某工作流画布页 → 聊天框说"把 XX 改成 YY" → 计划(改动方案)→ 构建 → 预览 →
+  [确认] → 草稿就地写回 + 单次刷新,画布更新(无 YAML 往返)
 - **迭代(U3)**:完成后直接继续提要求,同一会话续聊;「新会话」按钮可重置
+- **实时输出(F3)**:规划/构建期间任务卡片内「Agent 输出」区逐字流式显示(60s 无输出有提示)
+- **附件(F1)**:白名单 PDF/图片/文本;文字版 PDF 抽文本、扫描版 PDF/图片走 RapidOCR(文本标
+  「可能有误」);计划阶段可「📎 补传附件」;附件用途(参考/生成含文件处理节点的工作流)由 Agent 决定并写进计划
 
 ## 升级(Dify 升版)
 
@@ -71,9 +82,10 @@ pnpm --dir bridge run start   # 监听 127.0.0.1:39181;首次运行生成 .indif
 
 | 路径 | 说明 |
 |---|---|
-| `bridge/` | 伴生服务(HTTP/WS + DSH 会话驱动 + 任务状态机) |
-| `extension/` | Chrome 扩展 MV3(sidePanel + SW + content script;`mock-bridge.mjs` 为联调假 Bridge) |
+| `bridge/` | 伴生服务(HTTP/WS + DSH 会话驱动 + 两段式状态机 + 附件/OCR) |
+| `extension/` | Chrome 扩展 MV3 0.2.0(sidePanel + SW + content script;`mock-bridge.mjs` 为联调假 Bridge) |
 | `skills/dify-workflow-dsl/` | DSL 适配层(唯一懂 Dify 版本细节的地方) |
-| `tools/` | 联调/回归/演练脚本(probe-dsh、dify-console、drive-task、upgrade-drill、package-extension) |
+| `tools/` | 联调/回归/演练脚本(probe-dsh、dify-console、drive-task、upgrade-drill、package-extension、ocr.py、setup-ocr) |
 | `docs/m0-findings.md` | M0 全部实测证据(DSH /api 契约、控制台 API、DSL 结构) |
+| `docs/upgrade-plan-v2.md` | v2 升级计划与实施进度(F2 两段式 / F3 实时流 / F1 附件) |
 | `generated/` | 运行时产物(gitignored) |

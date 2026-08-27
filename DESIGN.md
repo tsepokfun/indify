@@ -1,7 +1,8 @@
 # Indify — Dify 工作流自然语言生成器 · 设计文档
 
-> 状态:**已实现**(2026-08-20,全量 M0–M4 完成,附录 A 七条全部闭环)。round-trip diff=∅;U1/U2/U3
-> 无浏览器链路 + 用户浏览器 walkthrough 实测通过;§11 模拟升版演练 6/6(扩展与 Bridge 零版本硬编码)。
+> 状态:**已实现**(2026-08-20 全量 M0–M4 完成,附录 A 七条全部闭环;2026-08-27 **v2 三特性
+> F2 两段式确认 / F3 Agent 实时输出流 / F1 附件+OCR 完成**,扩展升 0.2.0)。
+> round-trip diff=∅;§11 模拟升版演练 6/6(扩展与 Bridge 零版本硬编码)。
 > 目标 Dify 版本:1.16.1(docker-compose 已钉死:`langgenius/dify-api:1.16.1` / `dify-web:1.16.1`)
 > 工作区:`D:\difyIndify`
 
@@ -108,20 +109,29 @@
 
 ### 5.2 伴生服务 Indify Bridge
 
-- 技术:Node.js 20+(TS),`node:http` + `ws` 两个依赖以内;单文件可运行。
+- 技术:Node.js 20+(TS),运行时依赖 `ws` + `pdfjs-dist` + `@napi-rs/canvas`(OCR 依赖在专用 venv,不进 package.json)。
 - 端口:`39181`(工作区 `.indifyrc.yaml` 可改)。
-- 对外接口(扩展 ↔ Bridge):
+- 对外接口(扩展 ↔ Bridge,v2):
 
 | 接口 | 说明 |
 |---|---|
 | `GET /v1/health` | 健康检查 + Bridge 版本 |
-| `POST /v1/tasks` | 提交任务:`{mode: create\|modify, spec, currentGraph?, difyVersion, sessionId?}` |
-| `WS /v1/events` | 任务进度帧:`task.progress / task.result / task.error / hitl.request` |
-| `GET /v1/artifacts/{taskId}/{file}` | 读取落盘产物(`ir.json`、`workflow.yaml`、`graph.json`、`result.json`) |
+| `POST /v1/tasks` | 提交任务:`{mode: create\|modify, spec, context?, sessionId?, attachments?}` |
+| `GET /v1/tasks/{taskId}` | 任务状态 |
+| `POST /v1/tasks/{taskId}/decision` | HITL:`{action: build\|revise-plan\|approve\|revise, planText?, feedback?}` |
+| `POST /v1/tasks/{taskId}/attachments` | 计划阶段补传附件(同一任务目录追加) |
+| `POST /v1/tasks/{taskId}/injected` | 注入完成回报 |
+| `WS /v1/events` | 帧:`task.frame`(状态机)/ `task.stream`(Agent 实时输出与附件识别通知) |
+| `GET /v1/artifacts/{taskId}/{file}` | 读取落盘产物(`ir.json`、`workflow.yaml`、`graph.json`、`result.json`、`plan.txt`、`plan-final.txt`) |
 | `GET /v1/adapter/{version}` | 返回 adapter JSON(扩展侧版本敏感细节的唯一来源) |
 
-- DSH 侧:普通 fetch 客户端指向 `http://127.0.0.1:3080/api`,按 §7 协议调用;订阅 `/api/events.mux` WebSocket 监听会话帧。
-- 任务状态机:`queued → agent-running → draft-ready(HITL)→ injecting → done | failed`。状态持久化到工作区 `generated/{taskId}/task.json`,重启不丢。
+- DSH 侧:普通 fetch 客户端指向 `http://127.0.0.1:3080/api`,按 §7 协议调用;订阅 `/api/events.mux` WebSocket 监听会话帧(把 `assistant/chunk` 组装为 `task.stream` 广播,见 v2 F3)。
+- 任务状态机(v2 两段式):
+  `queued → planning → plan-ready ──build──→ building → draft-ready(HITL)→ finalizing → ready → injecting → done | failed`,
+  `plan-ready` 可经 `revise-plan` 循环;`draft-ready` 可经 `revise` 迭代。状态持久化到工作区 `generated/{taskId}/task.json`,重启不丢(进行中的任务重启后标记 failed,不迁移)。
+- 附件(v2 F1):白名单(PDF/图片/文本)+ 大小/张数上限,Bridge 权威校验;文字版 PDF 抽文本、
+  扫描版 PDF 渲染页图后 RapidOCR、图片 RapidOCR(仅 OCR 文本通道,见 §13 R8);OCR 在专用 venv
+  `.venv-ocr`(`tools/setup-ocr.ps1/.sh` 安装),任务排队期间后台跑,不阻塞主流程。
 - 认证:首次运行生成 token 写入 `D:\difyIndify\.indifyrc.yaml`,扩展安装时由用户粘贴(或走 native messaging 自动交换,二期)。
 
 ### 5.3 Builder Agent(DSH 会话)
@@ -246,15 +256,22 @@ D:\difyIndify\skills\dify-workflow-dsl\
   2. 读工作区 `generated/{taskId}/result.json`(机器消费)。
 - 续聊:`session.prompt` 复用同一 sessionId。
 
-### 7.3 HITL 流程(ADR-5)
+### 7.3 HITL 流程(ADR-5,v2 两段式)
 
 ```
-用户输入 ─► Bridge ─► Agent 生成 IR ─► result.json{status:"draft-ready"}
-  ─► 扩展聊天框渲染结构预览卡片(节点/连边清单 + 简要说明)
-      ├─ [确认] ─► Bridge 续发"approved" ─► Agent 产出终稿(YAML/graph) ─► status:"ready" ─► 注入
-      └─ [修改意见] ─► Bridge 续发修改意见 ─► Agent 迭代 ─► 回到预览
+用户输入(可带附件)─► Bridge ─► Agent 写实施计划 ─► result.json{status:"plan-ready"}
+  ─► 扩展聊天框渲染「可编辑计划文本框」(对话中部,用户可直接手改;附件用途取舍写在计划里)
+      ├─ [开始构建] ─► 用户最终计划文本(唯一权威,落盘 plan-final.txt)
+      │      ─► Agent 构建 ─► result.json{status:"draft-ready"}
+      │      ─► 扩展渲染结构预览卡片(节点/连边清单 + 简要说明)
+      │          ├─ [确认] ─► Bridge 续发 approved ─► Agent 产出终稿(YAML/graph) ─► status:"ready" ─► 注入
+      │          └─ [修改意见] ─► Bridge 续发修改意见 ─► Agent 迭代结构 ─► 回到预览
+      └─ [让 Agent 修订](附补充说明)─► Agent 重写计划 ─► 回到 plan-ready(循环)
 注入完成 ─► 扩展提示"已更新,请查看画布"(原生画布 = 最终人工闸口)
 ```
+
+- create 与 modify **都走计划阶段**(无快速模式);无计划直接 Build 被状态机守卫拒绝。
+- v2 F3:规划/构建期间 Agent 输出逐字流式推送到面板(60s 无输出有提示),turn 结束渲染正式产物。
 
 ## 8. 注入路线(Dify 控制台)
 
@@ -289,16 +306,23 @@ D:\difyIndify\skills\dify-workflow-dsl\
 D:\difyIndify\
 ├─ DESIGN.md                        # 本文档
 ├─ .indifyrc.yaml                   # Bridge 配置(端口、token、Dify 控制台 URL 映射)
+├─ .venv-ocr\                       # RapidOCR 专用 venv(gitignored,tools/setup-ocr 安装)
 ├─ skills\dify-workflow-dsl\…        # §5.4
 └─ generated\{taskId}\
    ├─ task.json                     # 任务与状态机
+   ├─ plan.txt                      # 阶段一实施计划(Agent 写,可编辑文本框的底稿)
+   ├─ plan-final.txt                # 用户最终计划(Bridge 写,构建唯一权威)
+   ├─ plan-feedback.txt             # 计划修订反馈(Bridge 写)
+   ├─ current-graph.json            # modify 模式当前草稿 graph(Bridge 写)
    ├─ ir.json                       # 终稿 IR(机器消费)
    ├─ workflow.yaml                 # create 模式 DSL
    ├─ graph.json                    # modify 模式新 graph
-   └─ result.json                   # {status, appId?, appUrl?, summary, warnings[]}
+   ├─ result.json                   # {status: plan-ready|draft-ready|ready|failed, summary, warnings[]}
+   └─ attachments\                  # v2 F1 附件(原件 + .txt/.ocr.txt/页图)
 ```
 
-约定:Agent 只写自己 taskId 的目录;Bridge 只读不写(除 task.json)。
+约定:Agent 只写自己 taskId 的目录;Bridge 只读 Agent 产物,只写
+task.json、current-graph.json、plan-final.txt、plan-feedback.txt 与 attachments/(附件处理)。
 
 ## 10. 安全与信任
 
@@ -326,6 +350,7 @@ D:\difyIndify\
 | M2 新建链路 | U1 全流程:聊天 → IR 预览 → 确认 → YAML → 原生导入 → 画布 | ✅ 无浏览器链路实测跑通(2026-08-19:queued→agent-running→draft-ready→finalizing→ready→injected→done;approve 与 revise 双路径;生成物 round-trip diff=∅);浏览器侧 U1 演示待用户 walkthrough |
 | M3 修改链路 | U2 全流程:草稿读 → Agent 改 → 写回 → 画布就地更新;U3 迭代续聊 | ✅ 无浏览器链路实测通过(2026-08-19:echo 应用 2→3 节点就地更新、code 节点标题/desc 同会话二次修改,全程 graph JSON + 草稿 API,无 YAML 往返;U3 同会话 12s 续改);浏览器侧 R4 时序竞争待真机验证 |
 | M4 版本化完善 | adapter JSON 完整、版本探测、升级演练(11 节流程走一遍)、打包与自托管安装说明 | ✅ 版本探测(扩展按 /app-dsl-version 选 adapter)、`tools/upgrade-drill.mjs` 模拟升版 6/6 通过、Bridge/扩展 0 处版本硬编码、`tools/package-extension.ps1` 打包、根 README 安装/使用/升级说明齐全 |
+| v2 体验升级 | F2 两段式确认(计划文本框 + build/revise-plan);F3 Agent 实时输出流(task.stream);F1 附件 + RapidOCR(白名单/PDF/扫描件/图片,补传端点) | ✅ 无浏览器链路全部实测(2026-08-27:两段式双回路、流式逐字、4 类附件识别、负向拒绝、守卫 409、生成物 round-trip diff=∅、`upgrade-drill` 仍 6/6);扩展升 0.2.0 打包;**多模态实测否决**(DSH 双模型不吃图,用户拍板仅 OCR 文本);浏览器全流程实测待用户 walkthrough |
 
 ## 13. 风险与开放问题
 
@@ -338,6 +363,8 @@ D:\difyIndify\
 | R5 | MV3 service worker 休眠导致 ws 断开 | 任务推送丢失 | ws 保活 + 任务状态落盘可恢复 + 重连重放 |
 | R6 | 控制台域名/端口非 localhost(用户改过 nginx 配置) | content script 不注入 | 域匹配从 `.indifyrc.yaml` 读取,支持多域列表 |
 | R7 | DSH 提问系统(HITL)不在扩展内 | 用户错过确认 | ADR-5 已规避:确认流程自建在扩展聊天框;DSH 提问联动列为二期 |
+| R8 | Builder 会话模型无视觉能力(实测:deepseek-v4-pro/flash 均不吃图,`MODEL_DOES_NOT_SUPPORT_IMAGES`) | 图片/扫描件无法直接看图 | **已定案(2026-08-27,用户拍板)**:仅 RapidOCR 文本通道,面板标注「OCR 文本,可能有误」;原件/页图保留供人工核对;DSH 若换用视觉模型可再启用多模态路径 |
+| R9 | RapidOCR 对模糊/手写/复杂表格识别有错漏;Python 3.13 轮子可用性 | 文本内容有误/安装失败 | OCR 文本标注可能有误;setup 脚本含 uv/3.12 兜底;3.13 + onnxruntime 1.29 已实测可用 |
 
 ## 附录 A:未验证清单(实现期逐条闭环)
 

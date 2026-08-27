@@ -1,6 +1,6 @@
 # Indify 升级计划 v2.1 —— 文件上传 + 两段式确认 + Agent 实时输出流
 
-> 状态:**实施中**(2026-08-27 开工;终审已过,遗留决策已全部拍板)
+> 状态:**已实现**(2026-08-27 三特性全部落地并推送;无浏览器链路验收完成,浏览器全流程实测待用户 walkthrough)
 > 范围:三个特性;不包含音视频;不改 IR 契约与版本防波堤架构。
 > 前置文档:`DESIGN.md`(已实现基线)、`docs/m0-findings.md`。
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | F2 两段式确认 | ✅ 已实现(707b8b4) | 状态机 planning/plan-ready/building + decision build/revise-plan + 可编辑计划文本框;无浏览器回归:双回路(revise-plan 修订生效、plan-edit 手改落盘 plan-final.txt 为唯一权威)、守卫 4×409 负向、生成物 round-trip diff=∅;浏览器端待最终全流程实测 |
 | F3 Agent 实时输出流 | ✅ 已实现(4d6c6c9) | Bridge mux 帧过滤(text-delta/reasoning-delta/tool 提示)→ task.stream 广播,active 任务↔session 映射防串台;面板「Agent 输出」区逐字渲染/自动滚底/60s 无输出提示/turn 结束清流;无浏览器回归:--stream 实测规划与构建两阶段逐字流;浏览器端待最终全流程实测 |
-| F1 附件 + OCR | ⏳ 实现中 | **多模态实测结论(2026-08-27)**:DSH 环境内 deepseek-v4-pro 与 deepseek-v4-flash 均不吃图(prompt 准入层拒绝 image 部件,`MODEL_DOES_NOT_SUPPORT_IMAGES`)。用户已拍板:**接受仅 OCR 文本**——图片/扫描版 PDF 只走 RapidOCR 文本通道,面板标注「OCR 文本,可能有误」;两条多模态路径(① prompt image 部件 ② Agent read_image)按实测移除。 |
+| F1 附件 + OCR | ✅ 已实现(24c7cf4) | 白名单/上限双查(前端+桥侧权威)、pdfjs 抽文本与页渲染(≤30 页)、RapidOCR venv(Python 3.13 实测可用)、补传端点、附件随任务与计划引用;无浏览器回归:文字版 PDF/扫描版 PDF/图片/md 四类识别、.mp4/.docx 400 拒绝、生成物 round-trip diff=∅、真实扩展自动注入 Dify 成功(appId 已产生);修掉子进程 stdout 编码 bug(中文路径 GBK 打爆 print)。**多模态实测结论**:DSH 双模型不吃图,用户拍板仅 OCR 文本。浏览器端待最终全流程实测 |
 
 **遗留决策拍板记录(2026-08-27)**:OCR 自动安装=允许;附件上限=沿用默认;模型不吃图=接受仅 OCR 文本(先暂停汇报后用户拍板);扩展版本=0.2.0;实测节奏=全部完成后一次性浏览器全流程实测;旧任务=不迁移。
 
