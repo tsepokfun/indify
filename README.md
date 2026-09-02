@@ -6,6 +6,9 @@ Dify 工作流,改动立即呈现在原生 Dify 控制台画布上;Dify 升级�
 **v3 技能运行时(实现中)**:把 Dify 工作流重新定位成「AI 的技能」——侧栏把 workflow 当技能列出,点「▶」即跑
 (publish → 建 app key → Service API `/v1/workflows/run`),再说话就地改进。详见 `DESIGN.md` 的「v3 技能运行时」与 `docs/v3-execution-spec.md`。
 
+**MCP server(已实现)**:`mcp/dify-mcp.mjs` 把技能列表暴露成标准 MCP tools(`list_skills` / `run_skill`),
+任何 MCP agent(Claude Code / Codex / Cursor / DSH)都能直接把 Dify workflow 当工具调。详见 `mcp/README.md`。
+
 目标版本:**Dify 1.16.1**(docker-compose 已钉死,控制台 `http://localhost`)。设计文档见 `DESIGN.md`;
 Dify 栈的 docker 部署细节见 `docs/dify-docker-deployment.md`。
 
@@ -85,6 +88,19 @@ pwsh -File tools/setup-ocr.ps1     # 装 RapidOCR 到 .venv-ocr(约数百 MB;mac
 - **副作用审批(S4,待)**:`side_effects.tier ∈ {write, external_send, irreversible}` 的技能运行前弹确认。
 - **改进闭环(S5,待)**:改完 workflow 后自动 publish + run + 判定成功。
 
+## 使用(MCP,已实现)
+
+任何 MCP agent 都能把 Dify workflow 当工具调:
+
+```json
+{ "mcpServers": { "dify": { "command": "node", "args": ["D:\\difyIndify\\mcp\\dify-mcp.mjs"] } } }
+```
+
+- `list_skills` —— 列出全部技能(名称 / app id / 副作用 tier / 输入)
+- `run_skill(skill, inputs)` —— 跑一个工作流,回 outputs
+
+前置:`node tools/bootstrap-skillcards.mjs` 生成技能卡;workflow 需「已发布」;app key 填进 `mcp/config.json`(模板见 `mcp/config.example.json`,该文件 gitignored)。
+
 ## 升级(Dify 升版)
 
 只改两处(详见 `DESIGN.md` §11 与 `tools/upgrade-drill.mjs`):
@@ -102,7 +118,9 @@ pwsh -File tools/setup-ocr.ps1     # 装 RapidOCR 到 .venv-ocr(约数百 MB;mac
 | `bridge/` | 伴生服务(HTTP/WS + DSH 会话驱动 + 两段式状态机 + 附件/OCR) |
 | `extension/` | Chrome 扩展 MV3 0.2.0(sidePanel + SW + content script;`mock-bridge.mjs` 为联调假 Bridge) |
 | `skills/dify-workflow-dsl/` | DSL 适配层(唯一懂 Dify 版本细节的地方) |
-| `tools/` | 联调/回归/演练脚本(probe-dsh、dify-console、drive-task、upgrade-drill、package-extension、ocr.py、setup-ocr) |
+| `tools/` | 联调/回归/演练脚本(probe-dsh、dify-console、drive-task、upgrade-drill、package-extension、bootstrap-skillcards、ocr.py、setup-ocr) |
+| `mcp/` | MCP server(dify-mcp):把技能暴露成 MCP tools(`list_skills` / `run_skill`)给任意 agent 调 |
+| `registry/` | 技能卡 manifest schema + 反推生成器 |
 | `docs/m0-findings.md` | M0 全部实测证据(DSH /api 契约、控制台 API、DSL 结构) |
 | `docs/upgrade-plan-v2.md` | v2 升级计划与实施进度(F2 两段式 / F3 实时流 / F1 附件) |
 | `generated/` | 运行时产物(gitignored) |
