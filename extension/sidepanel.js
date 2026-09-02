@@ -826,6 +826,38 @@ function renderRunPending(target) {
   el.innerHTML = `<div class="run-result-pending">运行中(blocking)…首次运行会自动发布草稿并创建 API key,请稍候…</div>`;
 }
 
+// S4:副作用 gate 的确认处理(needsConfirm → confirm() → 重发 confirmed)
+async function runWithConfirm(appId, inputs, target) {
+  const res = await sendMessagePromise({ type: "indify:runWorkflow", appId, inputs });
+  const result = res && res.result;
+  if (result && result.needsConfirm) {
+    const se = result.sideEffects || {};
+    const notes = se.notes && se.notes.length ? se.notes.join(", ") : "可能對外發送/寫入";
+    if (!confirm(`此工作流有副作用(tier=${se.tier}):${notes}\n\n確定要運行嗎?`)) {
+      renderRunResult({ ok: false, error: "已取消(未確認副作用)" }, target);
+      return { cancelled: true };
+    }
+    renderRunPending(target);
+    const res2 = await sendMessagePromise({ type: "indify:runWorkflow", appId, inputs, confirmed: true });
+    const r2 = res2 && res2.result;
+    if (r2) renderRunResult(r2, target);
+    else {
+      renderRunResult({ ok: false, error: (res2 && res2.error) || "运行失败(未知错误)" }, target);
+      return { error: true };
+    }
+    return { ok: true };
+  }
+  if (result) {
+    renderRunResult(result, target);
+    return { ok: true };
+  }
+  if (!res.ok) {
+    renderRunResult({ ok: false, error: res.error || "运行失败(未知错误)" }, target);
+    return { error: true };
+  }
+  return { ok: true };
+}
+
 async function doRunWorkflow() {
   const appId = state.context && state.context.appId;
   if (!appId) {
@@ -848,13 +880,7 @@ async function doRunWorkflow() {
   }
 
   renderRunPending();
-  const res = await sendMessagePromise({ type: "indify:runWorkflow", appId, inputs });
-  if (res && res.result) {
-    renderRunResult(res.result); // 兜底:直接响应也携带结果(与广播幂等)
-  } else if (!res.ok) {
-    renderRunResult({ ok: false, error: res.error || "运行失败(未知错误)" });
-  }
-  // 成功路径:SW 会广播 indify:runResult,由 onMessage → renderRunResult 渲染
+  await runWithConfirm(appId, inputs, null);
 }
 
 // ================= 技能(S2:列表 + 按名运行) =================
@@ -920,18 +946,9 @@ async function doRunSkill(appId) {
   runningSkillId = appId;
   renderSkills();
   renderRunPending(els.skillsResult);
-  const res = await sendMessagePromise({ type: "indify:runWorkflow", appId, inputs: {} });
-  if (res && res.result) {
-    // 成功:广播 indify:runResult 会按 appId 路由到 skillsResult 并复位 runningSkillId;
-    // 此处兜底渲染(广播迟到/丢失时),但不复位,避免与广播竞态把结果漏写到底部 run-box。
-    renderRunResult(res.result, els.skillsResult);
-  } else if (!res.ok) {
-    // 失败/needDify:SW 直接返回错误且不广播,这里渲染并复位。
-    renderRunResult({ ok: false, error: res.error || "运行失败(未知错误)" }, els.skillsResult);
-    runningSkillId = null;
-    renderSkills();
-  } else {
-    // res.ok 但无 result(异常):复位,等广播兜底。
+  const r = await runWithConfirm(appId, {}, els.skillsResult);
+  // 取消/失败(无广播)在此复位;成功靠广播 indify:runResult 复位 runningSkillId
+  if (r.cancelled || r.error) {
     runningSkillId = null;
     renderSkills();
   }

@@ -17,9 +17,9 @@
 三层:
 - **L0 运行时**:一个 Dify workflow = 一个 AI 可调用的 skill;「跑」= Service API `POST /v1/workflows/run`(Bearer `app-<key>`)。
 - **L1 技能卡**:`registry/skillcard.schema.json` + `generate-skillcard.mjs`,从 workflow 反推「名字/何时用/入出参/副作用五阶/成功判定」。S1 ✅。
-- **L2 注册中心 + 调用循环**:`generated/skill-registry.json`(技能 → app_id)+ 扩展侧「技能列表 + ▶运行」+ 副作用分级确认闸(S4)+ 改进闭环(S5)。
+- **L2 注册中心 + 调用循环**:`generated/skill-registry.json`(技能 → app_id)+ 扩展侧「技能列表 + ▶运行」+ 副作用分级确认闸(S4 ✅)+ 改进闭环(S5 ✅)。
 
-状态:S1 ✅ / S3(run: publish→建 key→Service API)✅ / S2(技能列表 + 按名运行)🔄 / S4(审批闸)待 / S5(改完自动 publish+run)待。
+状态:S1 ✅ / S2(技能列表+按名运行)✅ / S3(run)✅ / Run 模式(说话选技能跑)✅ / S4(副作用审批闸)✅ / S5(改完自动 publish+run)✅ / MCP server(dify-mcp)✅。
 
 红线不变:不 fork Dify、不改源码、渲染交给原生 Dify;执行侧走 content-script(浏览器同源,持 console cookie 才能建 app key)。app key 只进 `chrome.storage.local`,不入库。
 

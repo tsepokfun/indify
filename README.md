@@ -81,12 +81,12 @@ pwsh -File tools/setup-ocr.ps1     # 装 RapidOCR 到 .venv-ocr(约数百 MB;mac
 - **附件(F1)**:白名单 PDF/图片/文本;文字版 PDF 抽文本、扫描版 PDF/图片走 RapidOCR(文本标
   「可能有误」);计划阶段可「📎 补传附件」;附件用途(参考/生成含文件处理节点的工作流)由 Agent 决定并写进计划
 
-## 使用(v3 技能运行时,实现中)
+## 使用(v3 技能运行时)
 
 - **技能列表**:侧栏「技能」区列出 Dify 的 workflow 应用(注册表 `generated/skill-registry.json`),点「▶」即跑该技能,无需停在它的画布页。
 - **运行**:publish 草稿 → 建/取 app API key(存 `chrome.storage.local`)→ Service API `POST /v1/workflows/run`(blocking)→ 面板显示 status/outputs/error/耗时。
-- **副作用审批(S4,待)**:`side_effects.tier ∈ {write, external_send, irreversible}` 的技能运行前弹确认。
-- **改进闭环(S5,待)**:改完 workflow 后自动 publish + run + 判定成功。
+- **副作用审批(S4)**:`side_effects.tier ∈ {write, external_send, irreversible}` 的技能运行前弹确认。
+- **改进闭环(S5)**:改完 workflow 后自动 publish + run + 判定成功。
 
 ## 使用(MCP,已实现)
 

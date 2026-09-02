@@ -389,12 +389,51 @@ async function publishDraft(appId, adapter) {
   return true;
 }
 
-// 运行 workflow:①发布草稿 ②取/建 app key ③POST /v1/workflows/run(blocking)
+// S4:副作用分级(镜像 S1 的 NODE_TIER;code 节点按 none 处理 = 已知盲点)
+const SIDE_EFFECT_ORDER = { none: 0, read: 1, write: 2, external_send: 3, irreversible: 4 };
+const NODE_SIDE_EFFECT = {
+  "http-request": "external_send",
+  tool: "external_send",
+  agent: "external_send",
+  "knowledge-retrieval": "read",
+  "document-extractor": "read",
+  datasource: "read",
+};
+
+async function computeSideEffects(appId, adapter) {
+  try {
+    const g = await getDraft(appId, adapter);
+    const nodes =
+      g && g.ok && g.draft && g.draft.graph && Array.isArray(g.draft.graph.nodes) ? g.draft.graph.nodes : [];
+    let tier = "none";
+    const notes = [];
+    for (const n of nodes) {
+      const t = n && n.data && n.data.type;
+      if (!t || !(t in NODE_SIDE_EFFECT)) continue;
+      const mapped = NODE_SIDE_EFFECT[t];
+      if (SIDE_EFFECT_ORDER[mapped] > SIDE_EFFECT_ORDER[tier]) tier = mapped;
+      if (mapped === "external_send") notes.push(t);
+    }
+    return { tier, notes };
+  } catch (e) {
+    return { tier: "none", notes: [] };
+  }
+}
+
+// 运行 workflow:①副作用 gate ②发布草稿 ③取/建 app key ④POST /v1/workflows/run(blocking)
 // 返回 { ok, status, outputs, error, workflowRunId, taskId, elapsedTime, totalTokens, totalSteps }
-async function runWorkflow(appId, inputs, adapter) {
+async function runWorkflow(appId, inputs, adapter, opts) {
   if (!appId) return { ok: false, error: "缺少 appId" };
   if (!adapter || !adapter.console || !adapter.serviceApi) {
     return { ok: false, error: "adapter 缺失 console/serviceApi 配置" };
+  }
+
+  // S4:副作用 gate(带副作用且未确认 → 停下要求确认)
+  if (!opts || opts.confirmed !== true) {
+    const se = await computeSideEffects(appId, adapter);
+    if (se && SIDE_EFFECT_ORDER[se.tier] >= SIDE_EFFECT_ORDER.write) {
+      return { needsConfirm: true, sideEffects: se };
+    }
   }
 
   // inputs 归一化:接受对象或 JSON 字符串;非法一律按空对象(不强制填参,MVP)
@@ -513,7 +552,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "indify:runWorkflow") {
-    runWorkflow(message.appId, message.inputs, message.adapter)
+    runWorkflow(message.appId, message.inputs, message.adapter, { confirmed: message.confirmed === true })
       .then(sendResponse)
       .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
     return true;

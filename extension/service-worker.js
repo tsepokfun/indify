@@ -505,6 +505,22 @@ async function doInjectModify(taskId) {
 
   await bridgeFetch("POST", `/v1/tasks/${taskId}/injected`, { appId, appUrl });
 
+  // S5:改完自动 publish + run(验证改后结果;confirmed=true 跳过副作用 gate,MVP)
+  try {
+    const runResult = await chrome.tabs.sendMessage(contextTabId, {
+      type: "indify:runWorkflow",
+      appId,
+      inputs: {},
+      adapter,
+      confirmed: true,
+    });
+    chrome.runtime
+      .sendMessage({ type: "indify:runResult", appId, ...(runResult || {}) })
+      .catch(() => {});
+  } catch (e) {
+    /* 自动跑失败不阻断注入 */
+  }
+
   // 唯一一次刷新:画布就地呈现(不在 content script 里 reload,由 SW 统一控制)
   if (contextTabId != null) {
     chrome.tabs.reload(contextTabId).catch(() => {});
@@ -693,6 +709,7 @@ async function runWorkflow(message) {
       appId,
       inputs: message.inputs,
       adapter,
+      confirmed: message.confirmed === true,
     });
   } catch (e) {
     return {
@@ -702,10 +719,12 @@ async function runWorkflow(message) {
     };
   }
 
-  // 把 content-script 回包广播给 panel(成功/失败均呈现,不静默)
-  chrome.runtime
-    .sendMessage({ type: "indify:runResult", appId, ...(result || {}) })
-    .catch(() => {});
+  // needsConfirm 不广播(由面板直接响应处理);只有真正运行结果才广播
+  if (!(result && result.needsConfirm)) {
+    chrome.runtime
+      .sendMessage({ type: "indify:runResult", appId, ...(result || {}) })
+      .catch(() => {});
+  }
   return { ok: true, result };
 }
 
@@ -728,6 +747,7 @@ async function triggerRun(taskId) {
       appId,
       inputs: task.runInputs || {},
       adapter,
+      confirmed: true, // run 模式:Agent 已读技能卡副作用 tier,跳过 gate(MVP)
     });
   } catch (e) {
     result = { ok: false, error: "content script 运行失败:" + ((e && e.message) || e) };
