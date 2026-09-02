@@ -3,10 +3,20 @@
 **一句话**:Chrome 扩展聊天框 + 本地伴生服务(Bridge)+ DSL 适配层(skill)——用自然语言生成/修改
 Dify 工作流,改动立即呈现在原生 Dify 控制台画布上;Dify 升级时只更新 skill 与 adapter,扩展与 Bridge 代码零改动。
 
+**v3 技能运行时(实现中)**:把 Dify 工作流重新定位成「AI 的技能」——侧栏把 workflow 当技能列出,点「▶」即跑
+(publish → 建 app key → Service API `/v1/workflows/run`),再说话就地改进。详见 `DESIGN.md` 的「v3 技能运行时」与 `docs/v3-execution-spec.md`。
+
 目标版本:**Dify 1.16.1**(docker-compose 已钉死,控制台 `http://localhost`)。设计文档见 `DESIGN.md`;
 Dify 栈的 docker 部署细节见 `docs/dify-docker-deployment.md`。
 
-## 架构
+## 定位 —— 真正的用法
+
+把「自動化」從「你要會操作的面板」變成「AI 會調用的能力庫」。
+
+- **對自己的價值**:13 個 workflow 變成隨叫隨到的工具,不用開 Dify、不用記 app_id。
+- **對未來客戶 / STEAM 學生的價值**(「賣結果不賣技術」的底座):非程式設計師也能用自然語言驅動自動化。
+
+## 架構
 
 ```
 Chrome 扩展(sidePanel 聊天框 + SW + content script)
@@ -67,6 +77,13 @@ pwsh -File tools/setup-ocr.ps1     # 装 RapidOCR 到 .venv-ocr(约数百 MB;mac
 - **实时输出(F3)**:规划/构建期间任务卡片内「Agent 输出」区逐字流式显示(60s 无输出有提示)
 - **附件(F1)**:白名单 PDF/图片/文本;文字版 PDF 抽文本、扫描版 PDF/图片走 RapidOCR(文本标
   「可能有误」);计划阶段可「📎 补传附件」;附件用途(参考/生成含文件处理节点的工作流)由 Agent 决定并写进计划
+
+## 使用(v3 技能运行时,实现中)
+
+- **技能列表**:侧栏「技能」区列出 Dify 的 workflow 应用(注册表 `generated/skill-registry.json`),点「▶」即跑该技能,无需停在它的画布页。
+- **运行**:publish 草稿 → 建/取 app API key(存 `chrome.storage.local`)→ Service API `POST /v1/workflows/run`(blocking)→ 面板显示 status/outputs/error/耗时。
+- **副作用审批(S4,待)**:`side_effects.tier ∈ {write, external_send, irreversible}` 的技能运行前弹确认。
+- **改进闭环(S5,待)**:改完 workflow 后自动 publish + run + 判定成功。
 
 ## 升级(Dify 升版)
 

@@ -204,6 +204,7 @@ function buildTaskCard(task, preview, plan, stream) {
     const url = inj.appUrl;
     const msg = isModify ? "画布已更新(已刷新)" : task.summary || "已注入完成,请查看画布。";
     body += `<div class="task-summary">${escapeHtml(msg)}</div>`;
+    body += `<div class="btn-row" style="margin-top:8px;"><button class="btn primary" data-action="run-workflow">▶ 运行</button></div>`;
     if (!isModify && url) {
       body += `<div class="result-link"><a data-action="open-app" data-url="${escapeHtml(url)}">打开工作流画布 →</a></div>`;
     }
@@ -248,6 +249,18 @@ const els = {
   attachInput: document.getElementById("attach-input"),
   attachRow: document.getElementById("attach-row"),
   planAttachInput: document.getElementById("plan-attach-input"),
+  runBox: document.getElementById("run-box"),
+  runBtn: document.getElementById("run-btn"),
+  runToggleInputs: document.getElementById("run-toggle-inputs"),
+  runInputsWrap: document.getElementById("run-inputs-wrap"),
+  runInputs: document.getElementById("run-inputs"),
+  runResult: document.getElementById("run-result"),
+  skillsBox: document.getElementById("skills-box"),
+  skillsToggle: document.getElementById("skills-toggle"),
+  skillsRefresh: document.getElementById("skills-refresh"),
+  skillsList: document.getElementById("skills-list"),
+  skillsResult: document.getElementById("skills-result"),
+  runModeToggle: document.getElementById("run-mode-toggle"),
 };
 
 let state = {
@@ -364,6 +377,7 @@ function renderStatus(status) {
   els.contextText.textContent = formatContext(ctx);
 
   if (ctx && ctx.url) state.context = ctx;
+  renderRunBox();
   renderModeHint();
 }
 
@@ -625,6 +639,16 @@ async function handlePlanAttachFiles(files) {
 }
 
 // ================= 任务动作 =================
+let runMode = false; // Run 模式开关:开启时 submit 提交 mode:"run"(Agent 选技能)
+
+function setRunMode(on) {
+  runMode = !!on;
+  if (els.runModeToggle) els.runModeToggle.classList.toggle("active", runMode);
+  if (els.modeHint) {
+    els.modeHint.textContent = runMode ? "将运行某个技能(AI 选技能)" : isWorkflowPage() ? "将修改当前工作流" : "将新建工作流";
+  }
+}
+
 async function submit() {
   const spec = els.chatInput.value.trim();
   if (!spec) return;
@@ -632,7 +656,7 @@ async function submit() {
   els.sendBtn.disabled = true;
   pushUserMessage(spec);
 
-  const mode = isWorkflowPage() ? "modify" : "create";
+  const mode = runMode ? "run" : isWorkflowPage() ? "modify" : "create";
   const message = { type: "indify:submitTask", mode, spec };
   if (pendingAttachments.length > 0) message.attachments = pendingAttachments;
   const res = await sendMessagePromise(message);
@@ -758,6 +782,161 @@ async function doNewSession() {
   pushSystemMessage("已开启新会话(下次提交不复用原会话)");
 }
 
+// ================= 运行 workflow(S3:技能运行时生产执行路径) =================
+// TODO(S4):副作用分级确认尚未接入 —— 当前「▶ 运行」会直接 publish + 建 key + 执行,未做分级确认。
+function renderRunBox() {
+  // 仅当检测到工作流画布(appId 存在且 page=workflow)时显示运行区
+  if (els.runBox) els.runBox.classList.toggle("show", isWorkflowPage());
+}
+
+function renderRunResult(result, target) {
+  if (!result) return;
+  const el = target || els.runResult;
+  if (!el) return;
+  const status = result.status || "";
+  const ok = result.ok === true;
+  const outputs = result.outputs;
+  const error = result.error;
+  const elapsed = result.elapsedTime != null ? result.elapsedTime : undefined;
+
+  let html = "";
+  if (ok) {
+    html += `<div class="run-result-succeeded">✅ 运行成功(status=${escapeHtml(status)})</div>`;
+  } else if (error && !status) {
+    html += `<div class="run-result-error">❌ ${escapeHtml(error)}</div>`;
+  } else {
+    html += `<div class="run-result-failed">❌ 运行失败(status=${escapeHtml(status || "?")})</div>`;
+  }
+  if (elapsed != null) {
+    html += `<div class="run-result-meta">耗时 ${elapsed}s</div>`;
+  }
+  if (outputs != null) {
+    const outText = typeof outputs === "string" ? outputs : JSON.stringify(outputs, null, 2);
+    html += `<pre>outputs:\n${escapeHtml(outText)}</pre>`;
+  }
+  if (error) {
+    html += `<pre>error: ${escapeHtml(error)}</pre>`;
+  }
+  el.innerHTML = html;
+}
+
+function renderRunPending(target) {
+  const el = target || els.runResult;
+  if (!el) return;
+  el.innerHTML = `<div class="run-result-pending">运行中(blocking)…首次运行会自动发布草稿并创建 API key,请稍候…</div>`;
+}
+
+async function doRunWorkflow() {
+  const appId = state.context && state.context.appId;
+  if (!appId) {
+    pushSystemMessage("未检测到工作流画布(appId)。请打开 http://localhost/app/{uuid}/workflow");
+    return;
+  }
+  let inputs = {};
+  const raw = (els.runInputs.value || "").trim();
+  if (raw) {
+    try {
+      inputs = JSON.parse(raw);
+    } catch (e) {
+      pushSystemMessage("输入 JSON 解析失败:" + String((e && e.message) || e));
+      return;
+    }
+  }
+  if (inputs == null || typeof inputs !== "object" || Array.isArray(inputs)) {
+    pushSystemMessage("输入必须是 JSON 对象(如 {\"query\":\"你好\"})");
+    return;
+  }
+
+  renderRunPending();
+  const res = await sendMessagePromise({ type: "indify:runWorkflow", appId, inputs });
+  if (res && res.result) {
+    renderRunResult(res.result); // 兜底:直接响应也携带结果(与广播幂等)
+  } else if (!res.ok) {
+    renderRunResult({ ok: false, error: res.error || "运行失败(未知错误)" });
+  }
+  // 成功路径:SW 会广播 indify:runResult,由 onMessage → renderRunResult 渲染
+}
+
+// ================= 技能(S2:列表 + 按名运行) =================
+let skills = []; // 从 Bridge /v1/skills 拉取的技能注册表
+let skillsLoading = false;
+let runningSkillId = null; // 正在运行的技能 appId;非空时禁用其它 ▶
+
+function skillAppId(s) {
+  return (s && (s.appId || s.id)) || "";
+}
+
+function renderSkills() {
+  if (!els.skillsList) return;
+  if (!Array.isArray(skills) || skills.length === 0) {
+    els.skillsList.innerHTML = `<div class="task-summary">暂无技能(点「刷新」从 Bridge 重新拉取)</div>`;
+    return;
+  }
+  els.skillsList.innerHTML = skills
+    .map((s) => {
+      const appId = skillAppId(s);
+      const name = s.name || "(未命名)";
+      const desc = String(s.description || "");
+      const isRunning = runningSkillId != null && runningSkillId === appId;
+      const disabled = isRunning || !appId ? " disabled" : "";
+      return `
+        <div class="skill-item">
+          <div class="skill-main">
+            <div class="skill-name">${escapeHtml(name)}</div>
+            <div class="skill-desc" title="${escapeHtml(desc)}">${escapeHtml(desc)}</div>
+          </div>
+          <button class="btn skill-run" data-action="run-skill" data-app-id="${escapeHtml(appId)}"${disabled}>${isRunning ? "运行中…" : "▶"}</button>
+        </div>`;
+    })
+    .join("");
+}
+
+async function loadSkills(opts) {
+  const silent = !!(opts && opts.silent);
+  if (skillsLoading) return;
+  skillsLoading = true;
+  if (els.skillsRefresh) els.skillsRefresh.disabled = true;
+  const res = await sendMessagePromise({ type: "indify:listSkills" });
+  skillsLoading = false;
+  if (els.skillsRefresh) els.skillsRefresh.disabled = false;
+  if (res && res.ok) {
+    skills = Array.isArray(res.skills) ? res.skills : [];
+    renderSkills();
+  } else {
+    skills = [];
+    renderSkills();
+    if (!silent) {
+      pushSystemMessage("获取技能列表失败:" + ((res && res.error) || "未知错误"));
+    }
+  }
+}
+
+async function doRunSkill(appId) {
+  if (!appId) return;
+  if (runningSkillId != null) {
+    pushSystemMessage("已有技能在运行中,请稍候…");
+    return;
+  }
+  runningSkillId = appId;
+  renderSkills();
+  renderRunPending(els.skillsResult);
+  const res = await sendMessagePromise({ type: "indify:runWorkflow", appId, inputs: {} });
+  if (res && res.result) {
+    // 成功:广播 indify:runResult 会按 appId 路由到 skillsResult 并复位 runningSkillId;
+    // 此处兜底渲染(广播迟到/丢失时),但不复位,避免与广播竞态把结果漏写到底部 run-box。
+    renderRunResult(res.result, els.skillsResult);
+  } else if (!res.ok) {
+    // 失败/needDify:SW 直接返回错误且不广播,这里渲染并复位。
+    renderRunResult({ ok: false, error: res.error || "运行失败(未知错误)" }, els.skillsResult);
+    runningSkillId = null;
+    renderSkills();
+  } else {
+    // res.ok 但无 result(异常):复位,等广播兜底。
+    runningSkillId = null;
+    renderSkills();
+  }
+}
+
 // ================= 事件绑定 =================
 els.sendBtn.addEventListener("click", submit);
 els.chatInput.addEventListener("keydown", (e) => {
@@ -784,6 +963,26 @@ els.attachRow.addEventListener("click", (e) => {
     pendingAttachments.splice(idx, 1);
     renderChips();
   }
+});
+
+// S3:运行按钮(底部,仅在 workflow 画布页显示)
+els.runBtn.addEventListener("click", doRunWorkflow);
+if (els.runModeToggle) els.runModeToggle.addEventListener("click", () => setRunMode(!runMode));
+els.runToggleInputs.addEventListener("click", () => {
+  els.runInputsWrap.classList.toggle("show");
+});
+
+// S2:技能区(可折叠,默认收起)
+els.skillsToggle.addEventListener("click", () => {
+  const collapsed = els.skillsBox.classList.toggle("collapsed");
+  els.skillsToggle.textContent = collapsed ? "技能 ▸" : "技能 ▾";
+});
+els.skillsRefresh.addEventListener("click", () => loadSkills());
+els.skillsList.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-action='run-skill']");
+  if (!btn) return;
+  const appId = btn.dataset.appId;
+  if (appId) doRunSkill(appId);
 });
 
 els.tokenSave.addEventListener("click", async () => {
@@ -874,6 +1073,9 @@ els.taskCard.addEventListener("click", (e) => {
     case "new-session":
       doNewSession();
       break;
+    case "run-workflow":
+      doRunWorkflow();
+      break;
     default:
       break;
   }
@@ -916,6 +1118,15 @@ chrome.runtime.onMessage.addListener((message) => {
     onTaskMessage(message.task);
   } else if (message.type === "indify:stream") {
     onStream(message.data);
+  } else if (message.type === "indify:runResult") {
+    // S2:技能运行的结果路由到技能区;其余(底部 run-box)沿用原路径
+    if (runningSkillId != null && message.appId && message.appId === runningSkillId) {
+      renderRunResult(message, els.skillsResult);
+      runningSkillId = null;
+      renderSkills();
+    } else {
+      renderRunResult(message);
+    }
   }
 });
 
@@ -956,6 +1167,9 @@ async function init() {
   } catch (e) {
     /* 忽略 */
   }
+
+  // 3) 初始拉取技能列表(S2;静默失败,不打扰用户)
+  loadSkills({ silent: true });
 }
 
 init();

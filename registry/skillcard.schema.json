@@ -1,0 +1,162 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://indify.local/schemas/skillcard.schema.json",
+  "title": "Indify Skill Card Manifest",
+  "description": "技能卡 manifest 標準(藍圖 L1):把一個 Dify workflow 描述為 AI 可調用的 skill。S1 只定義標準與反推生成器,不涉及運行與註冊中心。",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "description",
+    "when_to_use",
+    "input_schema",
+    "output_schema",
+    "side_effects",
+    "verify",
+    "source"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/slug",
+      "description": "技能唯一標識(slug,小寫字母/數字/連字號)。"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "技能顯示名。"
+    },
+    "description": {
+      "type": "string",
+      "description": "一句話描述這個技能做什麼。"
+    },
+    "when_to_use": {
+      "type": "string",
+      "description": "給 Agent 的自然語言使用指引:何時選用、給什麼輸入、拿到什麼輸出。"
+    },
+    "app_id": {
+      "type": ["string", "null"],
+      "description": "Dify app 的 id(可選,由 app 元數據提供)。"
+    },
+    "workflow_id": {
+      "type": ["string", "null"],
+      "description": "Dify workflow 版本 id(可選,由 app 元數據提供)。"
+    },
+    "input_schema": {
+      "$ref": "#/definitions/inputVariableSchema"
+    },
+    "output_schema": {
+      "$ref": "#/definitions/outputVariableSchema"
+    },
+    "side_effects": {
+      "$ref": "#/definitions/sideEffects"
+    },
+    "verify": {
+      "$ref": "#/definitions/verify"
+    },
+    "source": {
+      "$ref": "#/definitions/source"
+    }
+  },
+  "definitions": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "minLength": 1
+    },
+    "variableType": {
+      "type": "string",
+      "description": "變數類型約定: string / number / boolean / object / array / file。自由字串,不鎖死以允許未來擴充。"
+    },
+    "inputVariableSchema": {
+      "type": "object",
+      "description": "輸入變數名 → 變數定義。鍵為變數名,值含 type / description / required。",
+      "additionalProperties": {
+        "$ref": "#/definitions/inputVariableDef"
+      }
+    },
+    "outputVariableSchema": {
+      "type": "object",
+      "description": "輸出變數名 → 變數定義。鍵為變數名,值含 type / description。",
+      "additionalProperties": {
+        "$ref": "#/definitions/outputVariableDef"
+      }
+    },
+    "inputVariableDef": {
+      "type": "object",
+      "required": ["type", "required"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "$ref": "#/definitions/variableType" },
+        "description": { "type": "string", "default": "" },
+        "required": { "type": "boolean", "default": false }
+      }
+    },
+    "outputVariableDef": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "$ref": "#/definitions/variableType" },
+        "description": { "type": "string", "default": "" }
+      }
+    },
+    "sideEffects": {
+      "type": "object",
+      "required": ["tier", "notes"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["none", "read", "write", "external_send", "irreversible"],
+          "description": "副作用分級: none < read < write < external_send < irreversible(聚合取最高)。"
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "說明為何給出該分級(逐個非 none 節點列一條)。"
+        }
+      }
+    },
+    "verify": {
+      "type": "object",
+      "required": ["how"],
+      "additionalProperties": false,
+      "properties": {
+        "how": {
+          "type": "string",
+          "description": "自然語言:如何確認一次運行成功。"
+        },
+        "success_field": {
+          "type": ["string", "null"],
+          "description": "可選:輸出中代表成功的欄位名。"
+        },
+        "success_values": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "可選:success_field 的哪些取值代表成功。"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "dify-workflow",
+          "description": "來源種類,固定為 dify-workflow。"
+        },
+        "dslPath": {
+          "type": ["string", "null"],
+          "description": "反推所用的 DSL 檔案路徑。"
+        },
+        "version": {
+          "type": ["string", "null"],
+          "description": "DSL 版本號(如 0.7.0)。"
+        }
+      }
+    }
+  }
+}

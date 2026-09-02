@@ -8,6 +8,23 @@
 
 ---
 
+## v3 技能运行时(实现中,2026-09)
+
+> **定位重定义**:Dify 从「给人搭流程的低代码画布」升级为「给 AI 提供技能的运行时 + 技能注册中心」。
+> 人不再手动点运行,而是「说话/打字 → AI 选用技能 → 跑 → 回报 → 再说话改进」。
+> 详见 `docs/v3-skill-runtime-藍圖.md`(蓝图)、`docs/v3-execution-spec.md`(实现 spec)。
+
+三层:
+- **L0 运行时**:一个 Dify workflow = 一个 AI 可调用的 skill;「跑」= Service API `POST /v1/workflows/run`(Bearer `app-<key>`)。
+- **L1 技能卡**:`registry/skillcard.schema.json` + `generate-skillcard.mjs`,从 workflow 反推「名字/何时用/入出参/副作用五阶/成功判定」。S1 ✅。
+- **L2 注册中心 + 调用循环**:`generated/skill-registry.json`(技能 → app_id)+ 扩展侧「技能列表 + ▶运行」+ 副作用分级确认闸(S4)+ 改进闭环(S5)。
+
+状态:S1 ✅ / S3(run: publish→建 key→Service API)✅ / S2(技能列表 + 按名运行)🔄 / S4(审批闸)待 / S5(改完自动 publish+run)待。
+
+红线不变:不 fork Dify、不改源码、渲染交给原生 Dify;执行侧走 content-script(浏览器同源,持 console cookie 才能建 app key)。app key 只进 `chrome.storage.local`,不入库。
+
+---
+
 ## 0. 文档约定
 
 - **ADR** = 已拍板的架构决策,编号连续,修改需显式说明理由。

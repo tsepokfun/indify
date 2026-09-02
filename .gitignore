@@ -20,3 +20,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+
+# 生成的技能卡(由 tools/bootstrap-skillcards.mjs 从 DB dump 生成,含实例特定 app_id)
+registry/*.skillcard.json
+registry/*.skillcard.md

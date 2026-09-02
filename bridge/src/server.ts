@@ -12,6 +12,8 @@
  */
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { loadConfig, RC_PATH, type BridgeConfig } from './config.js';
 import { listAdapters, getAdapter } from './adapter.js';
@@ -120,7 +122,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       json(res, 400, { error: 'bad-json' });
       return;
     }
-    const mode = body['mode'] === 'modify' ? 'modify' : 'create';
+    const mode = body['mode'] === 'modify' ? 'modify' : body['mode'] === 'run' ? 'run' : 'create';
     const spec = typeof body['spec'] === 'string' ? body['spec'].trim() : '';
     if (!spec) {
       json(res, 400, { error: 'spec-required' });
@@ -150,7 +152,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
 
   // ---- 单任务操作 ----
-  const taskMatch = /^\/v1\/tasks\/([A-Za-z0-9_-]+)(\/(decision|injected|attachments))?$/.exec(path);
+  const taskMatch = /^\/v1\/tasks\/([A-Za-z0-9_-]+)(\/(decision|injected|attachments|run-result))?$/.exec(path);
   if (taskMatch) {
     const taskId = taskMatch[1]!;
     const sub = taskMatch[3];
@@ -241,6 +243,18 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       json(res, 202, { accepted: true });
       return;
     }
+    if (req.method === 'POST' && sub === 'run-result') {
+      let body: Record<string, unknown>;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        json(res, 400, { error: 'bad-json' });
+        return;
+      }
+      orchestrator.markRunResult(taskId, body);
+      json(res, 202, { accepted: true });
+      return;
+    }
     json(res, 405, { error: 'method-not-allowed' });
     return;
   }
@@ -277,6 +291,28 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
       return;
     }
     json(res, 200, adapter);
+    return;
+  }
+
+  // ---- 技能列表(S2:从 generated/skill-registry.json 读取;文件缺失返回空列表,解析失败返回 500) ----
+  if (req.method === 'GET' && path === '/v1/skills') {
+    const registryPath = join(cfg.workspaceRoot, 'generated', 'skill-registry.json');
+    if (!existsSync(registryPath)) {
+      json(res, 200, { skills: [] });
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(registryPath, 'utf8')) as unknown;
+    } catch {
+      json(res, 500, { error: 'skill-registry-invalid', message: 'skill-registry.json 解析失败' });
+      return;
+    }
+    const skills =
+      parsed && typeof parsed === 'object' && Array.isArray((parsed as { skills?: unknown }).skills)
+        ? ((parsed as { skills: unknown[] }).skills)
+        : [];
+    json(res, 200, { skills });
     return;
   }
 

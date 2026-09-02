@@ -290,6 +290,22 @@
       color: var(--muted);
       margin-bottom: 6px;
     }
+    #run-mode-toggle {
+      height: 24px;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      cursor: pointer;
+      margin: 0 0 6px 8px;
+    }
+    #run-mode-toggle.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
     .composer {
       display: flex;
       gap: 8px;
@@ -358,6 +374,111 @@
       flex-shrink: 0;
     }
     #attach-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #run-box {
+      display: none;
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fafbfc;
+    }
+    #run-box.show { display: block; }
+    .run-row { display: flex; gap: 8px; margin-bottom: 6px; }
+    #run-inputs-wrap { display: none; margin-bottom: 6px; }
+    #run-inputs-wrap.show { display: block; }
+    #run-inputs {
+      width: 100%;
+      min-height: 48px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      resize: vertical;
+    }
+    #run-result { font-size: 12px; line-height: 1.5; word-break: break-word; }
+    #run-result pre {
+      margin: 4px 0;
+      padding: 6px 8px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+    .run-result-succeeded { color: var(--ok); font-weight: 600; }
+    .run-result-failed { color: var(--err); font-weight: 600; }
+    .run-result-error { color: var(--err); }
+    .run-result-pending { color: var(--muted); }
+    .run-result-meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+    /* S2:技能区 */
+    #skills-box {
+      background: var(--panel-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 13px;
+    }
+    .skills-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .skills-toggle {
+      border: none;
+      background: transparent;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      cursor: pointer;
+      padding: 0;
+    }
+    .skills-toggle:hover { color: var(--accent); }
+    #skills-refresh { font-size: 12px; padding: 4px 10px; }
+    #skills-body { margin-top: 8px; }
+    #skills-box.collapsed #skills-body { display: none; }
+    .skill-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      border-top: 1px dashed var(--border);
+    }
+    .skill-item:first-child { border-top: none; }
+    .skill-main { flex: 1; min-width: 0; }
+    .skill-name { font-weight: 600; font-size: 12px; }
+    .skill-desc {
+      font-size: 11px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .skill-run { flex-shrink: 0; padding: 4px 10px; }
+    #skills-result {
+      margin-top: 8px;
+      font-size: 12px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    #skills-result pre {
+      margin: 4px 0;
+      padding: 6px 8px;
+      background: #fafbfc;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      max-height: 160px;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
@@ -376,6 +497,16 @@
   </header>
 
   <main id="messages">
+    <div id="skills-box" class="collapsed">
+      <div class="skills-header">
+        <button id="skills-toggle" class="skills-toggle">技能 ▸</button>
+        <button id="skills-refresh" class="btn">刷新</button>
+      </div>
+      <div id="skills-body">
+        <div id="skills-list"></div>
+        <div id="skills-result"></div>
+      </div>
+    </div>
     <div id="user-messages"></div>
     <div id="task-card"></div>
     <div id="empty-hint" class="placeholder">
@@ -386,6 +517,17 @@
 
   <footer>
     <div id="mode-hint">将新建工作流</div>
+    <button id="run-mode-toggle" title="开启后发送的内容交给 AI 选技能并运行">⚡ 运行模式</button>
+    <div id="run-box">
+      <div class="run-row">
+        <button id="run-btn" class="btn primary">▶ 运行</button>
+        <button id="run-toggle-inputs" class="btn">输入 JSON</button>
+      </div>
+      <div id="run-inputs-wrap">
+        <textarea id="run-inputs" spellcheck="false">{}</textarea>
+      </div>
+      <div id="run-result"></div>
+    </div>
     <div id="attach-row"></div>
     <div class="composer">
       <button id="attach-btn" title="附加文件(PDF/图片/文本)">📎</button>

@@ -50,9 +50,38 @@
         "response": { "result": "success", "hash": "string(新)", "updated_at": "int" },
         "note": "CSRF 豁免;hash 不匹配返回冲突错误,此时需重新 GET draft 再写"
       },
-      "draftPublish": { "method": "GET|POST", "path": "/apps/{app_id}/workflows/publish" },
+      "draftPublish": { "method": "POST", "path": "/apps/{app_id}/workflows/publish", "note": "POST=发布草稿(Service API 只认已发布版本,run 前必须);GET=读已发布版本" },
       "defaultBlockConfigs": { "method": "GET", "path": "/apps/{app_id}/workflows/default-workflow-block-configs" },
-      "systemFeatures": { "method": "GET", "path": "/system-features", "note": "免登录,用于版本/功能探测" }
+      "systemFeatures": { "method": "GET", "path": "/system-features", "note": "免登录,用于版本/功能探测" },
+      "createApiKey": { "method": "POST", "path": "/apps/{app_id}/api-keys", "payload": {}, "response": { "id": "string", "type": "app", "token": "string", "last_used_at": "int|null", "created_at": "int" }, "note": "token 明文返回;create 后持久化到 chrome.storage.local 以复用;每 app 上限 10 支" },
+      "listApiKeys": { "method": "GET", "path": "/apps/{app_id}/api-keys", "note": "列出 app 的 key;ApiKeyItem.token 明文返回,可复用已存在 key(源码 model.py ApiToken.token 未哈希)" }
+    }
+  },
+  "serviceApi": {
+    "baseUrl": "http://localhost",
+    "auth": { "type": "bearer", "scheme": "Bearer", "keyPrefix": "app-" },
+    "endpoints": {
+      "runWorkflow": {
+        "method": "POST",
+        "path": "/v1/workflows/run",
+        "payload": { "inputs": "object(必填)", "user": "string(必填非空)", "response_mode": "blocking|streaming" },
+        "response": {
+          "task_id": "string",
+          "workflow_run_id": "string",
+          "data": {
+            "status": "succeeded|failed|stopped|paused|running",
+            "outputs": "object|null",
+            "error": "string|null",
+            "elapsed_time": "number",
+            "total_tokens": "number",
+            "total_steps": "number"
+          }
+        },
+        "note": "Bearer app-<key> 认证;baseUrl 与 console 同源(nginx /v1 → api:5001)"
+      },
+      "runLog": { "method": "GET", "path": "/v1/workflows/run/{workflow_run_id}" },
+      "stopTask": { "method": "POST", "path": "/v1/workflows/tasks/{task_id}/stop" },
+      "listLogs": { "method": "GET", "path": "/v1/workflows/logs" }
     }
   },
   "versionDetection": {

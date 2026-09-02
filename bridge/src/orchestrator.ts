@@ -30,6 +30,8 @@ const ATTACHMENT_WAIT_MS = 180_000; // 计划 prompt 前等附件处理的时长
 // 版本细节(参考目录、节点白名单、字段)由 SKILL.md 与 adapter 声明,Agent 按 SKILL.md 的指针查阅。
 
 let SKILL_MD = '';
+let RUN_SKILL_MD = '';
+let REGISTRY = '';
 let VALIDATE = '';
 let IR_TO_DSL = '';
 let GEN_ROOT = '';
@@ -39,6 +41,8 @@ let WORKSPACE = '';
 export function initPromptPaths(workspaceRoot: string): void {
   WORKSPACE = workspaceRoot;
   SKILL_MD = join(workspaceRoot, 'skills', 'dify-workflow-dsl', 'SKILL.md');
+  RUN_SKILL_MD = join(workspaceRoot, 'skills', 'run-workflow', 'SKILL.md');
+  REGISTRY = join(workspaceRoot, 'generated', 'skill-registry.json');
   VALIDATE = join(workspaceRoot, 'skills', 'dify-workflow-dsl', 'scripts', 'validate.mjs');
   IR_TO_DSL = join(workspaceRoot, 'skills', 'dify-workflow-dsl', 'scripts', 'ir_to_dsl.mjs');
   GEN_ROOT = join(workspaceRoot, 'generated');
@@ -194,6 +198,25 @@ function buildRevisePrompt(task: Task, feedback: string): string {
   ].join('\n');
 }
 
+function buildRunPrompt(task: Task): string {
+  const dir = taskDir(task);
+  return [
+    `你是 Indify 的 Run Agent(工作区 ${WORKSPACE},任务 ID ${task.taskId})。`,
+    `用户请求(原话):${task.spec}`,
+    '',
+    `【必读】先读 ${RUN_SKILL_MD},遵守其中的「Run 模式协议」;`,
+    `再读 ${REGISTRY} 的技能列表(每项含 name/description/whenToUse/inputSchema/sideEffects)。`,
+    '',
+    '【本阶段任务】',
+    '1) 从注册表里选最匹配用户请求的一个技能;',
+    '2) 按该技能的 inputSchema 填 inputs(拿不准的字段可省略,给 {} 也行);',
+    `3) 写 ${join(dir, 'run.json')},内容恰为 {"appId":"<选中技能的 id>","inputs":{...},"skillId":"<可选技能名>","needsConfirm":false};`,
+    `4) 写 ${join(dir, 'result.json')},内容恰为 {"status":"run-ready","summary":"<一句中文,说明选了哪个技能及理由>","warnings":[]}。`,
+    '',
+    '【纪律】只写 run.json 与 result.json;不要产出其它文件;不要调用提问/审批工具;最终只回复一句简短中文。',
+  ].join('\n');
+}
+
 export type DecisionAction = 'approve' | 'revise' | 'build' | 'revise-plan';
 
 export class Orchestrator {
@@ -235,6 +258,11 @@ export class Orchestrator {
       const sessionId = task.sessionId ?? (await this.dsh.createSession(this.cfg.workspaceRoot));
       task.sessionId = sessionId;
 
+      if (task.mode === 'run') {
+        await this.runRunTask(task);
+        return;
+      }
+
       if (task.mode === 'modify') {
         const graph = (task.context as { currentGraph?: unknown } | undefined)?.currentGraph;
         if (!graph) throw new Error('modify 任务缺少 context.currentGraph(扩展未读到当前草稿)');
@@ -266,6 +294,29 @@ export class Orchestrator {
     } catch (e) {
       this.fail(taskId, e);
     }
+  }
+
+  /** run 模式:queued → planning → run-ready(Agent 选技能写 run.json)→ 等扩展执行。 */
+  private async runRunTask(task: Task): Promise<void> {
+    const taskId = task.taskId;
+    this.store.transition(taskId, 'planning', { sessionId: task.sessionId, phase: 'Agent 选技能中' });
+    await this.promptAndWait(task, buildRunPrompt(task));
+
+    const result = this.store.readResult(taskId);
+    if (!result) throw new Error('Agent 未产出 result.json');
+    if (result.status === 'failed') throw new Error(result.summary || 'Agent 报告失败');
+    if (result.status !== 'run-ready') throw new Error(`意外 result.json 状态: ${result.status ?? '(空)'}(期望 run-ready)`);
+
+    const run = this.store.readRun(taskId);
+    if (!run || typeof run.appId !== 'string' || !run.appId) throw new Error('Agent 未产出合法 run.json(缺 appId)');
+    const inputs = run.inputs && typeof run.inputs === 'object' ? run.inputs : {};
+
+    this.store.transition(taskId, 'run-ready', {
+      phase: '等待扩展执行',
+      summary: result.summary,
+      appId: run.appId,
+      runInputs: inputs,
+    });
   }
 
   /**
@@ -372,6 +423,20 @@ export class Orchestrator {
   /** 注入完成回报(扩展侧成功导入/写回后调用)。 */
   markInjected(taskId: string, appId?: string, appUrl?: string): void {
     this.store.transition(taskId, 'done', { phase: '完成', appId, appUrl });
+  }
+
+  /** run 执行完成回报(扩展侧 runWorkflow 后调用):写 run-result.json + 落 done/failed。 */
+  markRunResult(taskId: string, result: Record<string, unknown>): void {
+    try {
+      writeFileSync(join(GEN_ROOT, taskId, 'run-result.json'), JSON.stringify(result, null, 2), 'utf8');
+    } catch (e) {
+      console.error('[bridge] 写 run-result.json 失败:', e);
+    }
+    const ok = result && result.ok === true;
+    this.store.transition(taskId, ok ? 'done' : 'failed', {
+      phase: ok ? '完成' : '运行失败',
+      error: ok ? undefined : String((result && result.error) || '运行失败'),
+    });
   }
 
   /* ---------- F3 实时流:active 任务 ↔ 会话映射(防串台) ---------- */

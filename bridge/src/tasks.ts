@@ -11,6 +11,7 @@ import { WORKSPACE_ROOT } from './config.js';
 export type TaskStatus =
   | 'queued'
   | 'planning'
+  | 'run-ready'
   | 'plan-ready'
   | 'building'
   | 'agent-running'
@@ -37,7 +38,7 @@ export interface TaskAttachment {
 
 export interface Task {
   taskId: string;
-  mode: 'create' | 'modify';
+  mode: 'create' | 'modify' | 'run';
   spec: string;
   status: TaskStatus;
   phase: string;
@@ -47,12 +48,13 @@ export interface Task {
   error?: string;
   appId?: string;
   appUrl?: string;
+  runInputs?: Record<string, unknown>;
   attachments?: TaskAttachment[];
   createdAt: number;
   updatedAt: number;
 }
 
-export const ARTIFACT_WHITELIST = new Set(['ir.json', 'workflow.yaml', 'graph.json', 'result.json', 'plan.txt', 'plan-final.txt']);
+export const ARTIFACT_WHITELIST = new Set(['ir.json', 'workflow.yaml', 'graph.json', 'result.json', 'plan.txt', 'plan-final.txt', 'run.json', 'run-result.json']);
 
 const GEN_DIR = join(WORKSPACE_ROOT, 'generated');
 
@@ -112,7 +114,7 @@ export class TaskStore {
     return this.tasks.values();
   }
 
-  create(input: { mode: 'create' | 'modify'; spec: string; context?: TaskContext; sessionId?: string }): Task {
+  create(input: { mode: 'create' | 'modify' | 'run'; spec: string; context?: TaskContext; sessionId?: string }): Task {
     const taskId = `t_${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}_${Math.random().toString(36).slice(2, 7)}`;
     const now = Date.now();
     const task: Task = {
@@ -169,6 +171,7 @@ export class TaskStore {
         error: t.error,
         appId: t.appId,
         appUrl: t.appUrl,
+        runInputs: t.runInputs,
         ...(artifact ? { artifact } : {}),
       },
     });
@@ -202,6 +205,17 @@ export class TaskStore {
   /** 读 result.json(Agent 契约:{status:"draft-ready"|"ready"|"failed", summary, warnings[]})。 */
   readResult(taskId: string): { status?: string; summary?: string; warnings?: string[] } | null {
     const buf = this.readArtifact(taskId, 'result.json');
+    if (!buf) return null;
+    try {
+      return JSON.parse(buf.toString('utf8'));
+    } catch {
+      return null;
+    }
+  }
+
+  /** 读 run.json(run 模式 Agent 产物:{appId, inputs, skillId?, needsConfirm?})。 */
+  readRun(taskId: string): { appId?: string; inputs?: Record<string, unknown>; skillId?: string; needsConfirm?: boolean } | null {
+    const buf = this.readArtifact(taskId, 'run.json');
     if (!buf) return null;
     try {
       return JSON.parse(buf.toString('utf8'));

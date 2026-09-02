@@ -110,3 +110,67 @@ POST /console/api/apps/{app_id}/workflows/draft
 - DSL 文件里的 `environment_variables`/`conversation_variables` 是运行时变量视图
   (`{name, value, source}`);草稿 API 里同名字段是更丰富的 `VariableEntity` 结构。二者不要混用。
 - 草稿 `graph` 的节点/边结构与 DSL 的 `workflow.graph` 一致;`features` 结构一致。
+
+## 5. Service API 执行侧(运行已发布 workflow)
+
+> 与 `adapter/dify-1.16.1.json` 的 `serviceApi` 段成对维护;契约依据 `docs/s0-service-api-findings.md`。
+> 这是公开 Service API,前缀 `/v1`,nginx 代理到 `api:5001`(与 `/console/api` 同源)。
+
+### 5.1 鉴权
+
+- **Bearer 认证**,请求头 `Authorization: Bearer app-<24位key>`。
+- key 前缀 `app-`(`ApiToken.generate_api_key("app-", 24)`),与 console 的 cookie+CSRF 是两套面。
+- key 校验:`app.status == "normal"`、`app.enable_api == true`;每 app 上限 10 支 key。
+- key 由 console `POST /apps/{app_id}/api-keys` 创建(需 console 登录态),响应含 `token`(**一次性可见**,须当下持久化);
+  `GET /apps/{app_id}/api-keys` 列表项通常不含 token 明文。
+
+### 5.2 运行 workflow(blocking)
+
+```
+POST /v1/workflows/run
+Authorization: Bearer app-<key>
+Content-Type: application/json
+
+{ "inputs": { "query": "..." },   // object,必填(至少 {})
+  "user": "indify",               // string,必填非空
+  "response_mode": "blocking" }   // 省略即 blocking;streaming 为 SSE
+```
+
+响应(blocking):
+
+```json
+{
+  "task_id": "<task id>",
+  "workflow_run_id": "<run id>",
+  "data": {
+    "id": "<run id>",
+    "workflow_id": "<本次执行的 workflow 版本 id>",
+    "status": "succeeded | failed | stopped | paused | running",
+    "outputs": { "...end 节点输出..." } | null,
+    "error": "<错误信息>" | null,
+    "elapsed_time": 0.123,
+    "total_tokens": 42,
+    "total_steps": 3,
+    "created_at": 1700000000,
+    "finished_at": 1700000001 | null
+  }
+}
+```
+
+- **成功判定**:`data.status === "succeeded" && !data.error`。
+- 失败时 `status="failed"` 且 `error` 带字符串;`stopped/paused/running` 均非成功,须能呈现。
+- 前置:**run 只认已发布版本**;改 draft 后须先 `POST /apps/{app_id}/workflows/publish`。
+
+### 5.3 其它端点
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/v1/workflows/run/{workflow_run_id}` | GET | 查询某次运行结果/状态(轮询用) |
+| `/v1/workflows/tasks/{task_id}/stop` | POST | 停止 streaming 中的 task |
+| `/v1/workflows/logs` | GET | 分页查询运行日志 |
+
+### 5.4 streaming(后置)
+
+- `response_mode:"streaming"` → `Content-Type: text/event-stream`,每帧 `data: {JSON}\n\n`。
+- 关键事件:`workflow_started` / `node_started` / `node_finished` / `workflow_finished`(含 outputs/error/elapsed)/ `error` / `ping`。
+- MVP 先用 blocking;streaming 与轮询 `runLog` 后置。

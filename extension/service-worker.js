@@ -361,6 +361,9 @@ function handleTaskFrame(data) {
   if (data.status === "ready") {
     triggerInject(data.taskId);
   }
+  if (data.status === "run-ready") {
+    triggerRun(data.taskId);
+  }
 }
 
 // 任务 done 后拉取详情,拿到 Bridge 侧实际 sessionId(201 响应不含该字段)
@@ -671,6 +674,79 @@ async function newSession() {
   return { ok: true };
 }
 
+// S3:运行当前 app 的 workflow —— panel → content script(publish+取/建 key+run)→ 广播 runResult 回 panel
+async function runWorkflow(message) {
+  const appId = message.appId || (context && context.appId);
+  if (!appId) {
+    return { ok: false, error: "缺少 appId(请打开工作流画布页)" };
+  }
+  if (contextTabId == null) {
+    return { ok: false, error: "未检测到 Dify 页面(请打开 http://localhost 工作流画布页)", needDify: true };
+  }
+  const adapter = await getAdapter();
+  if (!adapter) return { ok: false, error: "无法获取 adapter" };
+
+  let result;
+  try {
+    result = await chrome.tabs.sendMessage(contextTabId, {
+      type: "indify:runWorkflow",
+      appId,
+      inputs: message.inputs,
+      adapter,
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      error: "content script 运行失败(确认 Dify 页面已打开):" + ((e && e.message) || e),
+      needDify: true,
+    };
+  }
+
+  // 把 content-script 回包广播给 panel(成功/失败均呈现,不静默)
+  chrome.runtime
+    .sendMessage({ type: "indify:runResult", appId, ...(result || {}) })
+    .catch(() => {});
+  return { ok: true, result };
+}
+
+// Run 模式:run-ready 帧触发执行(Agent 已选技能写 run.json,Bridge 把 appId/runInputs 带在帧里)
+const runningTasks = new Set();
+
+async function triggerRun(taskId) {
+  if (runningTasks.has(taskId)) return; // 幂等
+  const task = currentTask;
+  if (!task || task.taskId !== taskId || task.mode !== "run") return;
+  const appId = task.appId;
+  if (!appId || contextTabId == null) return;
+
+  runningTasks.add(taskId);
+  const adapter = await getAdapter();
+  let result;
+  try {
+    result = await chrome.tabs.sendMessage(contextTabId, {
+      type: "indify:runWorkflow",
+      appId,
+      inputs: task.runInputs || {},
+      adapter,
+    });
+  } catch (e) {
+    result = { ok: false, error: "content script 运行失败:" + ((e && e.message) || e) };
+  }
+  // 回 Bridge 落 run-result.json + 状态 done/failed
+  await bridgeFetch("POST", `/v1/tasks/${taskId}/run-result`, result || {}).catch(() => {});
+  // 广播给面板
+  chrome.runtime.sendMessage({ type: "indify:runResult", appId, ...(result || {}) }).catch(() => {});
+  runningTasks.delete(taskId);
+}
+
+// S2:列出 Dify 里的 workflow 应用(技能注册表,来自 Bridge /v1/skills)
+async function listSkills() {
+  const res = await bridgeFetch("GET", "/v1/skills");
+  if (!res.ok) return { ok: false, error: extractBridgeError(res) };
+  const skills = res.data && Array.isArray(res.data.skills) ? res.data.skills : [];
+  return { ok: true, skills };
+}
+
 // ---------- 消息路由 ----------
 function handleContext(message, sender) {
   context = { ...(message.context || {}) };
@@ -721,6 +797,12 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 
     case "indify:newSession":
       return newSession();
+
+    case "indify:runWorkflow":
+      return runWorkflow(message);
+
+    case "indify:listSkills":
+      return listSkills();
 
     default:
       return;
